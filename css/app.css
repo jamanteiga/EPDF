@@ -3,7 +3,7 @@
   --bg: #e9ebee; --panel: #f6f6f6; --line: #d4d4d4; --text: #1f2328; --muted: #6a6f76;
   --accent: #2563a8; --accent-soft: #dbe8f7; --file: #b03a3a; --file-dark: #8f2c2c;
   --ok: #2e7d32; --warn: #b26a00; --bad: #c62828; --pink: #fbb4d0;
-  --tab-h: 34px; --rb-h: 104px; --dt-h: 34px; --st-h: 34px;
+  --tab-h: 28px; --rb-h: 52px; --dt-h: 34px; --st-h: 34px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color-scheme: light;
@@ -19,29 +19,31 @@ button { font: inherit; color: inherit; cursor: pointer; }
 #ribbon { background: var(--panel); border-bottom: 1px solid var(--line); flex: none; user-select: none; -webkit-user-select: none; }
 #rtabs { display: flex; height: var(--tab-h); align-items: flex-end; background: #e4e4e4; overflow-x: auto; scrollbar-width: none; }
 #rtabs::-webkit-scrollbar { display: none; }
-.rtab { border: 0; background: none; padding: 0 14px; height: 30px; white-space: nowrap; border-radius: 4px 4px 0 0; color: #333; }
+.rtab { border: 0; background: none; padding: 0 11px; height: 25px; font-size: 13px; white-space: nowrap; border-radius: 4px 4px 0 0; color: #333; }
 .rtab:hover { background: #f0f0f0; }
 .rtab.on { background: var(--panel); border: 1px solid var(--line); border-bottom-color: var(--panel); color: var(--accent); font-weight: 600; }
 .rtab.file { background: var(--file); color: #fff; margin-right: 4px; border-radius: 4px 4px 0 0; font-weight: 600; }
 .rtab.file:hover { background: var(--file-dark); }
-#rpanel { display: flex; height: var(--rb-h); overflow-x: auto; overflow-y: hidden; padding: 4px 4px 0; scrollbar-width: thin; }
+#rpanel { display: flex; height: var(--rb-h); overflow-x: auto; overflow-y: hidden; padding: 2px 4px; scrollbar-width: thin; }
 body.rb-collapsed #rpanel { display: none; }
-.rgroup { display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 0 6px; flex: none; }
-.ritems { display: flex; flex: 1; align-items: stretch; gap: 2px; }
-.rglabel { font-size: 11px; color: var(--muted); text-align: center; padding: 1px 0 3px; white-space: nowrap; }
-.rcol { display: flex; flex-direction: column; justify-content: flex-start; gap: 1px; }
+.rgroup { display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 0 4px; flex: none; }
+.ritems { display: flex; flex: 1; align-items: stretch; gap: 1px; }
+.rglabel { display: none; }
+.rcol { display: flex; flex-direction: column; justify-content: space-between; gap: 0; }
 .rbtn { border: 1px solid transparent; background: none; border-radius: 4px; display: flex; align-items: center; color: #222; }
 .rbtn:hover { background: #e3ecf7; border-color: #c4d6ee; }
 .rbtn:active { background: #cfe0f4; }
 .rbtn.on { background: #fde9b6; border-color: #e7c264; }
 .rbtn .ic { color: var(--accent); }
-.rbtn.lg { flex-direction: column; justify-content: flex-start; width: 68px; padding: 4px 2px; gap: 3px; font-size: 11.5px; line-height: 1.15; text-align: center; }
-.rbtn.lg .ic { width: 28px; height: 28px; stroke-width: 1.6; }
-.rbtn.sm { gap: 6px; padding: 2px 8px 2px 5px; height: 26px; font-size: 12.5px; white-space: nowrap; }
+.rbtn.lg { flex-direction: column; justify-content: center; min-width: 48px; padding: 2px 5px; gap: 2px; font-size: 10px; line-height: 1.1; text-align: center; }
+.rbtn.lg span { white-space: nowrap; }
+.rbtn.lg .ic { width: 20px; height: 20px; stroke-width: 1.7; }
+.rbtn.sm { gap: 4px; padding: 0 6px 0 4px; height: 16px; font-size: 11px; white-space: nowrap; }
+.rbtn.sm .ic { width: 13px; height: 13px; }
 .rbtn.soon { opacity: .5; }
-.rprop { display: flex; align-items: center; gap: 6px; font-size: 12.5px; height: 27px; padding: 0 6px; }
-.rprop input[type=color] { width: 30px; height: 22px; padding: 0; border: 1px solid #bbb; border-radius: 3px; background: none; }
-.rprop select { font: inherit; padding: 1px 4px; }
+.rprop { display: flex; align-items: center; gap: 4px; font-size: 11px; height: 16px; padding: 0 4px; }
+.rprop input[type=color] { width: 24px; height: 14px; padding: 0; border: 1px solid #bbb; border-radius: 3px; background: none; }
+.rprop select { font: inherit; padding: 0 2px; height: 16px; }
 
 /* ---------------- pestañas de documentos ---------------- */
 #doctabs { display: flex; align-items: flex-end; height: var(--dt-h); background: #cfd2d6; padding: 0 4px; gap: 2px; overflow-x: auto; flex: none; scrollbar-width: none; }

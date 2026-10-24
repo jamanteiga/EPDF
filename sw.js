@@ -1,6 +1,6 @@
 // ePDF — service worker: funcionamiento sin conexión
 // SPDX-License-Identifier: AGPL-3.0-or-later
-const VERSION = "epdf-1.0.0";
+const VERSION = "epdf-1.0.1";
 const CORE = [
   "./", "index.html", "manifest.webmanifest", "css/app.css", "css/pdfjs-layers.css", "icons/icon.svg", "icons/icon-192.png",
   "js/app.js", "js/core/engine.js", "js/core/doc.js", "js/core/viewer.js", "js/core/tools.js", "js/core/geom.js",

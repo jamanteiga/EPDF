@@ -17,7 +17,7 @@ import * as C from "./cmd/convert.js";
 import * as R from "./cmd/review.js";
 import * as AF from "./sign/autofirma.js";
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.0.1";
 const SOURCE_URL = "https://github.com/"; // ← indique aquí la URL pública del repositorio (obligación AGPL)
 
 // ---------------- archivos recientes (IndexedDB) ----------------
