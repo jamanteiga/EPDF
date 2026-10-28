@@ -3,7 +3,7 @@
 //  · Escritorio (Windows/macOS/Linux con AutoFirma instalado): comunicación por WebSocket local, sin servidor.
 //  · iPad/iPhone/Android (app «Cliente @firma»): exige los servicios intermedios
 //    StorageService y RetrieveService (afirma-signature-storage / afirma-signature-retriever)
-//    desplegados en un servidor accesible por HTTPS. Se configuran en Archivo › Preferencias.
+//    desplegados en un servidor accesible por HTTPS. Se configuran en ☰ Menú › Preferencias.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { loadScript, settings } from "../core/engine.js";
 

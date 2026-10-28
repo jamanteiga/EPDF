@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>ePDF</title>
 <meta name="description" content="ePDF — editor PDF libre en el navegador: anotar, editar, formularios, firma digital, OCR.">
-<meta name="theme-color" content="#f3f3f3">
+<meta name="theme-color" content="#ffffff">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="ePDF">
@@ -17,20 +17,22 @@
 <link rel="stylesheet" href="css/app.css">
 <!-- ePDF · Copyright (C) 2026 José Antonio Manteiga Presedo · AGPL-3.0-or-later -->
 </head>
-<body>
-  <header id="ribbon">
-    <div id="rtabs" role="tablist" aria-label="Pestañas"></div>
-    <div id="rpanel"></div>
+<body class="nodoc">
+  <header id="topbar">
+    <div class="brand">e<b>PDF</b></div>
+    <div id="doctabs" aria-label="Documentos abiertos"></div>
+    <div id="topact"></div>
   </header>
-  <div id="doctabs" aria-label="Documentos abiertos"></div>
   <div id="searchbar" role="search"></div>
   <div id="banner"></div>
   <main>
-    <aside id="sidebar"><div class="rail"></div><div class="sbody"></div></aside>
     <div id="viewers" class="tool-hand"></div>
     <div id="start"></div>
+    <div id="modebar"><nav id="modes" aria-label="Modos"></nav><div id="ctxbar" aria-label="Herramientas"></div></div>
+    <aside id="sidebar"><div class="rail"></div><div class="sbody"></div></aside>
+    <div id="hint"></div>
+    <footer id="statusbar" class="nodoc"></footer>
   </main>
-  <footer id="statusbar" class="nodoc"></footer>
   <div id="backstage"></div>
   <div id="modals"></div>
   <div id="toast" role="status" aria-live="polite"></div>

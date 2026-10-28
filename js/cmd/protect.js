@@ -35,7 +35,7 @@ export async function signDocument(app, { certify = false } = {}) {
   settings.data.lastMethod = r.method; settings.data.sigReason = r.reason; settings.data.sigLocation = r.location; settings.save();
 
   if (r.method === "autofirma" && !AF.configured()) {
-    return ui.alert("AutoFirma en iPad", `En iPad la firma con <b>Cliente @firma</b> no puede comunicarse directamente con el navegador: necesita dos servicios intermedios (<code>StorageService</code> y <code>RetrieveService</code> de la Suite @firma) publicados en un servidor HTTPS.<br><br>Indique sus direcciones en <b>Archivo › Preferencias › AutoFirma</b>. Mientras tanto puede firmar con su certificado <b>.p12/.pfx</b> (por ejemplo, el de la FNMT exportado con clave privada).`);
+    return ui.alert("AutoFirma en iPad", `En iPad la firma con <b>Cliente @firma</b> no puede comunicarse directamente con el navegador: necesita dos servicios intermedios (<code>StorageService</code> y <code>RetrieveService</code> de la Suite @firma) publicados en un servidor HTTPS.<br><br>Indique sus direcciones en <b>☰ Menú › Preferencias › AutoFirma</b>. Mientras tanto puede firmar con su certificado <b>.p12/.pfx</b> (por ejemplo, el de la FNMT exportado con clave privada).`);
   }
   if (r.method === "p12") {
     if (r.file?.length) {
@@ -104,7 +104,7 @@ export function sigReportHtml(res) {
 }
 
 export async function certInfo(app) {
-  if (!app.cert) return ui.alert("Identidades digitales", "No hay ningún certificado cargado en esta sesión. Se carga al firmar (Proteger › Firmar documento). El certificado nunca se guarda: permanece solo en memoria mientras la aplicación está abierta.");
+  if (!app.cert) return ui.alert("Identidades digitales", "No hay ningún certificado cargado en esta sesión. Se carga al firmar (Firmar › Firmar). El certificado nunca se guarda: permanece solo en memoria mientras la aplicación está abierta.");
   const i = app.cert.info;
   const r = await ui.modal("Identidad digital", `<div class="msg"><b>${ui.esc(i.cn)}</b><br>${i.o ? ui.esc(i.o) + "<br>" : ""}${i.serialName ? "NIF/Serie: " + ui.esc(i.serialName) + "<br>" : ""}Emisor: ${ui.esc(i.issuer)}<br>Válido: ${fmtDate(i.notBefore)} – ${fmtDate(i.notAfter)}</div>`, [{ text: "Olvidar certificado", value: "forget", danger: true }, { text: "Cerrar", value: null, primary: true }]);
   if (r === "forget") { app.cert = null; ui.toast("Certificado eliminado de la memoria"); }

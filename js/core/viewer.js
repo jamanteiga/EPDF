@@ -96,7 +96,7 @@ export class Viewer {
     if (!this.pages.length) return;
     const p = this.pages[this.current || 0] || this.pages[0];
     const v = this.vp(p, 1);
-    const W = this.root.clientWidth - 32, H = this.root.clientHeight - 24;
+    const cs = getComputedStyle(this.inner); const W = this.root.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 4, H = this.root.clientHeight - parseFloat(cs.paddingTop) - 70;
     if (W <= 0) return;
     let s = this.fit === "page" ? Math.min(W / v.width, H / v.height) : this.fit === "width" ? W / v.width : this.scale;
     s = clamp(s, 0.1, 8);

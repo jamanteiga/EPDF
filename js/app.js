@@ -5,7 +5,7 @@ import { readFile, pickFiles, download, shareFile, settings, baseName, fmtBytes,
 import { EpdfDoc } from "./core/doc.js";
 import { Viewer } from "./core/viewer.js";
 import { Tools } from "./core/tools.js";
-import { Ribbon, BACKSTAGE } from "./ui/ribbon.js";
+import { Ribbon, BACKSTAGE } from "./ui/modebar.js";
 import { Sidebar } from "./ui/sidebar.js";
 import { icon } from "./ui/icons.js";
 import * as ui from "./ui/dialogs.js";
@@ -17,7 +17,7 @@ import * as C from "./cmd/convert.js";
 import * as R from "./cmd/review.js";
 import * as AF from "./sign/autofirma.js";
 
-export const VERSION = "1.0.1";
+export const VERSION = "1.1.0";
 const SOURCE_URL = "https://github.com/"; // ← indique aquí la URL pública del repositorio (obligación AGPL)
 
 // ---------------- archivos recientes (IndexedDB) ----------------
@@ -50,7 +50,8 @@ class App {
     this.sidebar = new Sidebar(this);
     this.backstage = new Backstage(this);
     this.tabsEl = document.getElementById("doctabs");
-    this.setupStatus(); this.setupSearch(); this.setupDnD(); this.setupKeys();
+    this.setupTop(); this.setupStatus(); this.setupSearch(); this.setupDnD(); this.setupKeys();
+    window.addEventListener("resize", () => this.relayout());
     this.renderTabs(); this.renderStart();
     window.addEventListener("beforeunload", (e) => { if (this.docs.some(d => d.dirty)) { e.preventDefault(); e.returnValue = ""; } });
     if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) navigator.serviceWorker.register("sw.js").catch(() => {});
@@ -80,7 +81,7 @@ class App {
     });
     if (!d) return null;
     if (recent && !d.wasEncrypted) Recent.put(name, bytes);
-    if (d.wasEncrypted) ui.toast("Documento protegido abierto. Al guardar quedará sin contraseña salvo que use Proteger › Contraseña.", "info", 6000);
+    if (d.wasEncrypted) ui.toast("Documento protegido abierto. Al guardar quedará sin contraseña salvo que use Firmar › Contraseña.", "info", 6000);
     if (d.sigCount) PR.validate(this, true).catch(() => {});
     return d;
   }
@@ -89,6 +90,7 @@ class App {
     for (const x of this.docs) x.viewer?.show(x === d);
     this.tools.clearSel();
     document.getElementById("start").style.display = d ? "none" : "";
+    document.body.classList.toggle("nodoc", !d); this.relayout();
     this.renderTabs(); this.refreshBanner(); this.updateStatus(); this.sidebar.refresh();
     if (this.searchOpen) this.runSearch(true);
   }
@@ -161,7 +163,23 @@ class App {
     z.innerHTML = `<option value="">—</option>` + [25, 50, 75, 100, 125, 150, 200, 300, 400].map(v => `<option value="${v}">${v}%</option>`).join("") + `<option value="width">Ancho</option><option value="page">Página</option>`;
     z.onchange = () => { const v = this.active?.viewer; if (!v) return; if (z.value === "width" || z.value === "page") v.setFit(z.value); else if (z.value) v.setScale(+z.value / 100); };
   }
-  status(msg) { document.querySelector("#statusbar .st-msg").textContent = msg || ""; }
+  status(msg) {
+    const h = document.getElementById("hint"); h.textContent = msg || ""; h.classList.toggle("show", !!msg);
+    clearTimeout(this._hintT); if (msg) this._hintT = setTimeout(() => h.classList.remove("show"), 3500);
+  }
+  setupTop() {
+    const t = document.getElementById("topact");
+    const btn = (c, ic, label, cls = "tbtn") => `<button class="${cls}" data-c="${c}" title="${label}" aria-label="${label}">${icon(ic)}${cls.includes("pri") ? "<span>" + label + "</span>" : ""}</button>`;
+    t.innerHTML = btn("find", "search", "Buscar") + btn("undo", "undo-2", "Deshacer") + btn("redo", "redo-2", "Rehacer") + btn("share", "share", "Compartir") + btn("save", "save", "Guardar", "tbtn pri") + btn("menu", "menu", "Menú");
+    t.querySelectorAll("[data-c]").forEach(b => b.onclick = () => b.dataset.c === "menu" ? this.backstage.open("open") : this.cmd(b.dataset.c));
+  }
+  /** Ajusta el margen superior del documento a la altura de la barra de modos flotante */
+  relayout() {
+    const mb = document.getElementById("modebar");
+    const h = document.body.classList.contains("nodoc") ? 0 : mb.offsetHeight + 16;
+    document.documentElement.style.setProperty("--mb-h", h + "px");
+    this.active?.viewer?.applyFit?.();
+  }
   updateStatus() {
     const s = document.getElementById("statusbar"), d = this.active, v = d?.viewer;
     s.classList.toggle("nodoc", !d);
@@ -323,13 +341,13 @@ class App {
   }
   help() {
     ui.modal("Manual rápido", `<div class="msg help">
-      <h4>Abrir y guardar</h4><p><b>Archivo › Abrir</b> o el botón «+». Puede tener varios PDF abiertos en pestañas. <b>Guardar</b> descarga el PDF (en iPad: Archivos › Descargas); <b>Compartir</b> abre la hoja de iPadOS para «Guardar en Archivos», Mail, AirDrop…</p>
+      <h4>Abrir y guardar</h4><p><b>☰ Menú › Abrir</b> o el botón «+». Puede tener varios PDF abiertos en pestañas. <b>Guardar</b> descarga el PDF (en iPad: Archivos › Descargas); <b>Compartir</b> abre la hoja de iPadOS para «Guardar en Archivos», Mail, AirDrop…</p>
       <h4>Desplazarse y zoom</h4><p>Herramienta <b>Mano</b>: arrastre con un dedo. Pellizque para ampliar. Con otras herramientas activas, un dedo dibuja.</p>
       <h4>Comentar</h4><p>Elija la herramienta y arrastre sobre la página. <b>Seleccionar comentarios</b>: toque un comentario para moverlo, cambiar el color, editar el texto o eliminarlo.</p>
-      <h4>Editar texto</h4><p><b>Inicio › Editar texto</b>: toque una línea, modifíquela y pulse Intro. El texto antiguo se elimina realmente del PDF y se escribe el nuevo con una fuente estándar parecida.</p>
-      <h4>Firmar</h4><p><b>Proteger › Firmar documento</b>: con su certificado .p12/.pfx (firma PAdES, guardado incremental) o con AutoFirma. <b>Firma libre</b> añade una firma manuscrita (no es firma electrónica cualificada).</p>
-      <h4>OCR</h4><p><b>Convertir › Hacer OCR</b> reconoce el texto de escaneados (español, gallego, inglés) en el propio iPad.</p>
-      <h4>PDF/A</h4><p>Si el documento es PDF/A, se muestra el aviso rosa y se pide confirmación antes de modificarlo.</p></div>`, [{ text: "Cerrar", value: null, primary: true }], { wide: true });
+      <h4>Editar texto</h4><p><b>Editar › Editar texto</b>: toque una línea, modifíquela y pulse Intro. El texto antiguo se elimina realmente del PDF y se escribe el nuevo con una fuente estándar parecida.</p>
+      <h4>Firmar</h4><p><b>Firmar › Firmar</b>: con su certificado .p12/.pfx (firma PAdES, guardado incremental) o con AutoFirma. <b>Firma libre</b> añade una firma manuscrita (no es firma electrónica cualificada).</p>
+      <h4>OCR</h4><p><b>Convertir › OCR</b> reconoce el texto de escaneados (español, gallego, inglés) en el propio iPad.</p>
+      <h4>PDF/A</h4><p>Si el documento es PDF/A, se muestra un aviso ámbar y se pide confirmación antes de modificarlo.</p></div>`, [{ text: "Cerrar", value: null, primary: true }], { wide: true });
   }
   shortcuts() {
     ui.alert("Atajos de teclado", `<table class="kv"><tr><td>⌘/Ctrl + O</td><td>Abrir</td></tr><tr><td>⌘/Ctrl + S</td><td>Guardar</td></tr><tr><td>⌘/Ctrl + ⇧ + S</td><td>Guardar como</td></tr><tr><td>⌘/Ctrl + Z / Y</td><td>Deshacer / Rehacer</td></tr><tr><td>⌘/Ctrl + F</td><td>Buscar</td></tr><tr><td>⌘/Ctrl + P</td><td>Imprimir</td></tr><tr><td>⌘/Ctrl + + / − / 0</td><td>Acercar / Alejar / Ajustar</td></tr><tr><td>⌘/Ctrl + W</td><td>Cerrar documento</td></tr><tr><td>H / V</td><td>Mano / Selección de texto</td></tr><tr><td>Supr</td><td>Eliminar comentario seleccionado</td></tr><tr><td>Esc</td><td>Volver a la herramienta Mano</td></tr></table>`);
