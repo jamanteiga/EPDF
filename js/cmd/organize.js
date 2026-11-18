@@ -1,6 +1,6 @@
 // ePDF — pestaña Organizar
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { mu, pdflib, pickFiles, readFile, parsePageRanges, download, zip, baseName, hexToRgb01 } from "../core/engine.js";
+import { mu, muJob, pdflib, pickFiles, readFile, parsePageRanges, download, zip, baseName, hexToRgb01 } from "../core/engine.js";
 import { fzRectToPdf } from "../core/geom.js";
 import { appendContent } from "./annot.js";
 import * as ui from "../ui/dialogs.js";
@@ -173,8 +173,9 @@ export async function splitDoc(app) {
   else if (r.mode === "half") { const h = Math.ceil(n / 2); groups = [[...Array(h).keys()], [...Array(n - h).keys()].map(k => k + h)]; }
   else groups = r.ranges.split(";").map(s => parsePageRanges(s, n)).filter(g => g.length);
   if (!groups.length) return ui.toast("Nada que dividir", "err");
-  const m = await mu(); const src = await d.muDoc();
-  const parts = groups.map((g, k) => { const nd = new m.PDFDocument(); const gm = nd.newGraftMap(); g.forEach((p, j) => gm.graftPage(j, src, p)); return { name: `${baseName(d.name)}_${String(k + 1).padStart(2, "0")}.pdf`, data: nd.saveToBuffer("garbage,compress").asUint8Array().slice() }; });
+  const datas = await ui.run("Dividiendo…", async () => muJob("split", [(await d.currentBytes()).slice(), groups]));
+  if (!datas) return;
+  const parts = datas.map((data, k) => ({ name: `${baseName(d.name)}_${String(k + 1).padStart(2, "0")}.pdf`, data }));
   if (r.out === "zip") download(zip(parts), baseName(d.name) + "_dividido.zip", "application/zip");
   else for (const p of parts) await app.openBytes(p.data, p.name);
 }
@@ -193,15 +194,9 @@ export async function combine(app) {
   if (!ok) return;
   const chosen = items.filter(it => it.li.querySelector("input").checked);
   if (chosen.length < 1) return;
-  await ui.run("Combinando…", async () => {
-    const m = await mu(); const nd = new m.PDFDocument(); let pos = 0;
-    for (const it of chosen) {
-      const src = m.Document.openDocument(await it.get(), "application/pdf").asPDF();
-      if (src.needsPassword()) throw new Error("Hay un archivo protegido con contraseña");
-      const gm = nd.newGraftMap(); for (let k = 0; k < src.countPages(); k++) gm.graftPage(pos++, src, k);
-    }
-    await app.openBytes(nd.saveToBuffer("garbage,compress").asUint8Array().slice(), "Combinado.pdf");
-  });
+  const blobs = []; for (const it of chosen) blobs.push((await it.get()).slice());
+  const merged = await ui.run("Combinando…", () => muJob("merge", [blobs]));
+  if (merged) await app.openBytes(merged, "Combinado.pdf");
 }
 
 export async function replacePages(app) {

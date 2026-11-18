@@ -2,7 +2,7 @@
 // Todas las coordenadas en espacio "fz" (puntos, origen arriba-izquierda, como se ve la página).
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { settings, hexToRgb01 } from "../core/engine.js";
-import { pageCtm } from "../core/geom.js";
+import { pageCtm, mul, inv } from "../core/geom.js";
 
 const now = () => new Date();
 function stamp(a) {
@@ -83,6 +83,15 @@ export function applyAllRedactions(doc) {
 }
 
 // ---------- búsqueda de anotaciones ----------
+/** Referencia indirecta (objeto de /Annots) de una anotación */
+export function annotRef(page, a) {
+  const o = a.getObject(); if (o.isIndirect()) return o;
+  const p = o.pointer; const arr = page.getObject().get("Annots"); let r = null;
+  if (arr && arr.isArray()) arr.forEach((e) => { if (!r && e.isIndirect() && (e.pointer === p || e.resolve().pointer === p)) r = e; });
+  return r;
+}
+const STATE_ES = { Accepted: "Aceptado", Rejected: "Rechazado", Cancelled: "Cancelado", Completed: "Completado", None: "Pendiente", Marked: "Marcado", Unmarked: "Sin marcar" };
+export const stateEs = (s) => STATE_ES[s] || s || "";
 export function listAnnots(doc) {
   const out = [];
   for (let i = 0; i < doc.countPages(); i++) {
@@ -90,10 +99,50 @@ export function listAnnots(doc) {
     page.getAnnotations().forEach((a, k) => {
       const t = a.getType(); if (t === "Popup" || t === "Link" || t === "Widget") return;
       let author = "", date = null; try { author = a.getAuthor(); } catch {} try { date = a.getModificationDate(); } catch {}
-      out.push({ page: i, index: k, type: t, contents: a.getContents() || "", author, date, bounds: a.getBounds() });
+      const o = a.getObject(); let ref = 0, irt = 0, state = "", model = "";
+      try { ref = annotRef(page, a)?.asIndirect() || 0; } catch {}
+      try { const x = o.get("IRT"); if (x && !x.isNull() && x.isIndirect()) irt = x.asIndirect(); } catch {}
+      try { const x = o.get("State"); if (x && !x.isNull()) state = x.asString ? (x.isName() ? x.asName() : x.asString()) : ""; } catch {}
+      try { const x = o.get("StateModel"); if (x && !x.isNull()) model = x.isName() ? x.asName() : x.asString(); } catch {}
+      out.push({ page: i, index: k, type: t, contents: a.getContents() || "", author, date, bounds: a.getBounds(), ref, irt, state, model });
     });
   }
   return out;
+}
+/** Agrupa comentarios con sus respuestas y su estado de revisión (modelo Review de PDF) */
+export function threadAnnots(list) {
+  const byRef = new Map(list.filter(a => a.ref).map(a => [a.ref, a]));
+  const top = [];
+  for (const a of list) { a.replies = []; a.states = []; }
+  for (const a of list) {
+    const parent = a.irt && byRef.get(a.irt);
+    if (!parent) { top.push(a); continue; }
+    (a.state ? parent.states : parent.replies).push(a);
+  }
+  const t = (x) => x.date ? +new Date(x.date) : 0;
+  for (const a of top) { a.states.sort((x, y) => t(x) - t(y)); a.status = a.states.filter(s => (s.model || "Review") === "Review").at(-1)?.state || ""; a.replies.sort((x, y) => t(x) - t(y)); }
+  return top;
+}
+/** Respuesta (o cambio de estado) a un comentario: anotación Text con /IRT */
+export function addReply(doc, pageIndex, index, text, state = null) {
+  const page = doc.loadPage(pageIndex); const parent = page.getAnnotations()[index]; if (!parent) return;
+  const ref = annotRef(page, parent); if (!ref) throw new Error("No se pudo localizar el comentario");
+  const b = parent.getBounds();
+  const a = page.createAnnotation("Text");
+  a.setRect([b[0], b[1], b[0] + 18, b[1] + 18]); a.setIcon("Comment");
+  a.setContents(text || (state ? `${settings.data.author || "Revisor"}: ${stateEs(state)}` : ""));
+  stamp(a);
+  const o = a.getObject(); o.put("IRT", ref);
+  if (state) { o.put("State", doc.newString(state)); o.put("StateModel", doc.newString("Review")); }
+  o.put("F", 2 | 4 | 8 | 16); // oculta en la página: se muestra agrupada con el comentario original
+  a.update(); return a;
+}
+/** Elimina un comentario y todas sus respuestas/estados */
+export function deleteThread(doc, pageIndex, index) {
+  const page = doc.loadPage(pageIndex); const list = page.getAnnotations(); const a = list[index]; if (!a) return;
+  const ref = annotRef(page, a)?.asIndirect();
+  for (const x of list) { if (x === a) continue; try { const irt = x.getObject().get("IRT"); if (ref && irt && irt.isIndirect() && irt.asIndirect() === ref) page.deleteAnnotation(x); } catch {} }
+  page.deleteAnnotation(a);
 }
 export function annotAt(doc, pageIndex, x, y, pad = 3) {
   const page = doc.loadPage(pageIndex);
@@ -218,4 +267,135 @@ export function replaceLine(doc, pageIndex, line, newText, { hex = "#000000", si
     const size = sizeOverride || line.font?.size || h * 0.8;
     writeText(doc, pageIndex, [line.x ?? x0, line.y ?? y1 - h * 0.2], newText.split("\n"), { size, hex, baseFont: stdFontFor(line.font) });
   }
+}
+
+// ---------- portapapeles de comentarios ----------
+const SKIP_KEYS = new Set(["P", "Popup", "IRT", "Parent"]);
+function copyDict(dst, srcObj) {
+  const d = dst.newDictionary();
+  srcObj.forEach((v, k) => { if (!SKIP_KEYS.has(k)) d.put(k, dst.graftObject(v)); });
+  return d;
+}
+/** Exporta un comentario a un PDF mínimo (bytes) para el portapapeles interno */
+export function exportAnnot(m, doc, pageIndex, index) {
+  const page = doc.loadPage(pageIndex); const a = page.getAnnotations()[index];
+  if (!a) throw new Error("Comentario no encontrado");
+  const b = page.getBounds();
+  const nd = new m.PDFDocument(); const po = nd.addPage([0, 0, b[2] - b[0], b[3] - b[1]], 0, {}, ""); nd.insertPage(-1, po);
+  const pg = nd.findPage(0); const an = nd.newArray();
+  an.push(nd.addObject(copyDict(nd, a.getObject()))); pg.put("Annots", an);
+  return { bytes: nd.saveToBuffer("").asUint8Array().slice(), type: a.getType(), bounds: a.getBounds() };
+}
+/** Pega un comentario exportado en la página indicada, desplazado (dx,dy) */
+export function importAnnot(m, doc, pageIndex, clipBytes, dx = 0, dy = 0) {
+  const src = m.Document.openDocument(clipBytes, "application/pdf").asPDF();
+  if (dx || dy) moveAnnot(src, 0, 0, dx, dy); // desplazar en la copia (la página destino puede estar en caché)
+  const sa = src.findPage(0).get("Annots").get(0);
+  const po = doc.findPage(pageIndex);
+  const obj = doc.addObject(copyDict(doc, sa)); obj.put("P", po);
+  let an = po.get("Annots"); if (!an || an.isNull()) { po.put("Annots", doc.newArray()); an = po.get("Annots"); }
+  an.push(obj);
+}
+
+// ---------- redimensionar ----------
+/** Escala un comentario de los límites ob a nb (espacio fz) */
+export function scaleAnnot(doc, pageIndex, index, ob, nb) {
+  const a = getAnnot(doc, pageIndex, index); if (!a) return;
+  const sx = (nb[2] - nb[0]) / Math.max(1e-6, ob[2] - ob[0]), sy = (nb[3] - nb[1]) / Math.max(1e-6, ob[3] - ob[1]);
+  const f = (p) => [nb[0] + (p[0] - ob[0]) * sx, nb[1] + (p[1] - ob[1]) * sy];
+  if (a.hasInkList()) a.setInkList(a.getInkList().map(s => s.map(f)));
+  else if (a.hasLine()) { const [p, q] = a.getLine(); a.setLine(f(p), f(q)); }
+  else if (a.hasVertices()) a.setVertices(a.getVertices().map(f));
+  else if (a.hasQuadPoints()) a.setQuadPoints(a.getQuadPoints().map(q => { const o = []; for (let i = 0; i < q.length; i += 2) o.push(...f([q[i], q[i + 1]])); return o; }));
+  else if (a.hasRect()) { const r = a.getRect(); const p = f([r[0], r[1]]), q = f([r[2], r[3]]); a.setRect([Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.max(p[0], q[0]), Math.max(p[1], q[1])]); }
+  a.update();
+}
+export function setAnnotStyle(doc, pageIndex, index, { width, opacity } = {}) {
+  const a = getAnnot(doc, pageIndex, index); if (!a) return;
+  if (width != null) { try { a.setBorderWidth(width); } catch {} }
+  if (opacity != null) { try { a.setOpacity(opacity); } catch {} }
+  a.update();
+}
+
+// ---------- edición de párrafos ----------
+function colorHex(c) {
+  if (!c || !c.length) return "#000000";
+  let rgb = c.length === 1 ? [c[0], c[0], c[0]] : c.length === 4 ? [(1 - c[0]) * (1 - c[3]), (1 - c[1]) * (1 - c[3]), (1 - c[2]) * (1 - c[3])] : c.slice(0, 3);
+  return "#" + rgb.map(v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, "0")).join("");
+}
+/** Bloque de texto (párrafo) bajo el punto */
+export function blockAt(doc, pageIndex, x, y) {
+  const st = stext(doc, pageIndex);
+  const js = JSON.parse(st.asJSON());
+  let blk = null;
+  for (const b of js.blocks) {
+    if (b.type !== "text") continue; const r = b.bbox;
+    if (x >= r.x - 2 && x <= r.x + r.w + 2 && y >= r.y - 2 && y <= r.y + r.h + 2) { blk = b; break; }
+  }
+  if (!blk) return null;
+  const lines = blk.lines;
+  const text = lines.map(l => l.text).reduce((acc, t) => !acc ? t : acc.endsWith("-") ? acc.slice(0, -1) + t : acc + " " + t, "").replace(/\s+/g, " ").trim();
+  let lh = 0; for (let k = 1; k < lines.length; k++) lh += lines[k].y - lines[k - 1].y;
+  const size = lines[0].font?.size || 11;
+  const lineHeight = lines.length > 1 ? lh / (lines.length - 1) : size * 1.2;
+  let color = "#000000"; const R = blk.bbox;
+  try { let got = false; st.walk({ onChar(c, origin, font, sz, quad, col) { if (got) return; if (origin[0] >= R.x - 1 && origin[0] <= R.x + R.w + 1 && origin[1] >= R.y - 1 && origin[1] <= R.y + R.h + 1 && c.trim()) { color = colorHex(col); got = true; } } }); } catch {}
+  return { rect: [R.x, R.y, R.x + R.w, R.y + R.h], text, size, lineHeight, font: lines[0].font, x: lines[0].x, y: lines[0].y, color, nlines: lines.length };
+}
+/** Sustituye un párrafo: elimina el texto original y escribe el nuevo ajustado al ancho */
+export function replaceBlock(m, doc, pageIndex, blk, newText, { hex } = {}) {
+  const page = doc.loadPage(pageIndex);
+  const a = page.createAnnotation("Redact"); a.setRect([blk.rect[0] - 0.5, blk.rect[1] + 0.5, blk.rect[2] + 0.5, blk.rect[3] - 0.5]); a.update();
+  page.applyRedactions(false, 0, 0, 0);
+  if (!newText.trim()) return;
+  const baseFont = stdFontFor(blk.font);
+  const font = new m.Font(baseFont);
+  const wOf = (s) => { let w = 0; for (const ch of s) { try { w += font.advanceGlyph(font.encodeCharacter(ch.codePointAt(0))); } catch { w += 0.5; } } return w * blk.size; };
+  const maxW = (blk.rect[2] - blk.x) * 1.01;
+  const out = [];
+  for (const para of newText.split("\n")) {
+    let line = "";
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      const t = line ? line + " " + word : word;
+      if (wOf(t) <= maxW || !line) line = t; else { out.push(line); line = word; }
+    }
+    out.push(line);
+  }
+  writeText(doc, pageIndex, [blk.x, blk.y], out, { size: blk.size, hex: hex || blk.color, baseFont, lineHeight: blk.lineHeight / blk.size });
+}
+
+// ---------- imágenes del contenido ----------
+export function imageBlocks(doc, pageIndex) {
+  const list = [];
+  doc.loadPage(pageIndex).toStructuredText("preserve-images").walk({ onImageBlock(bbox, transform, image) { list.push({ bbox: [...bbox], image }); } });
+  return list;
+}
+export function imageAt(doc, pageIndex, x, y) {
+  const list = imageBlocks(doc, pageIndex);
+  for (let k = list.length - 1; k >= 0; k--) { const b = list[k].bbox; if (x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]) return { index: k, bounds: b, type: "Imagen", kind: "img" }; }
+  return null;
+}
+function redactImage(doc, pageIndex, bbox) {
+  const page = doc.loadPage(pageIndex);
+  const a = page.createAnnotation("Redact"); a.setRect([bbox[0] + 0.5, bbox[1] + 0.5, bbox[2] - 0.5, bbox[3] - 0.5]); a.update();
+  page.applyRedactions(false, 1, 0, 1); // quitar imágenes; conservar texto y gráficos
+}
+export function drawImage(doc, pageIndex, image, r) {
+  const po = doc.findPage(pageIndex); const { ctm } = pageCtm(po);
+  const ref = doc.addImage(image);
+  let res = po.getInheritable("Resources"); if (!res || res.isNull()) { res = doc.newDictionary(); po.put("Resources", res); } else if (po.get("Resources").isNull()) po.put("Resources", res);
+  let xo = res.get("XObject"); if (!xo || xo.isNull()) { res.put("XObject", doc.newDictionary()); xo = res.get("XObject"); }
+  let k = 1; while (!xo.get("EPDFImg" + k).isNull()) k++;
+  const name = "EPDFImg" + k; xo.put(name, ref);
+  const M = mul([r[2] - r[0], 0, 0, -(r[3] - r[1]), r[0], r[3]], inv(ctm));
+  appendContent(doc, po, `q ${M.map(v => v.toFixed(4)).join(" ")} cm /${name} Do Q\n`);
+}
+export function placeImage(doc, pageIndex, index, newRect) {
+  const b = imageBlocks(doc, pageIndex)[index]; if (!b) throw new Error("Imagen no encontrada");
+  redactImage(doc, pageIndex, b.bbox);
+  drawImage(doc, pageIndex, b.image, newRect);
+}
+export function removeImage(doc, pageIndex, index) {
+  const b = imageBlocks(doc, pageIndex)[index]; if (!b) throw new Error("Imagen no encontrada");
+  redactImage(doc, pageIndex, b.bbox);
 }

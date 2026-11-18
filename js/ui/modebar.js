@@ -17,32 +17,41 @@ export const MODES = [
     ...NAV, T("annsel", "Elegir", "mouse-pointer-click"), SEP,
     T("highlight", "Resaltar", "highlighter"), T("underline", "Subrayar", "underline"), T("strikeout", "Tachar", "strikethrough"), T("ink", "Lápiz", "pencil"),
     T("rect", "Rectángulo", "square"), T("ellipse", "Elipse", "circle"), T("arrow", "Flecha", "move-up-right"), T("line", "Línea", "minus"),
-    T("note", "Nota", "sticky-note"), T("typewriter", "Texto", "keyboard"), T("textbox", "Cuadro", "square-dashed-text"), B("stamp", "Sello", "stamp"),
-    T("distance", "Medir", "ruler"), T("eraser", "Borrar", "eraser"), SEP,
+    T("note", "Nota", "sticky-note"), T("typewriter", "Texto", "keyboard"), T("textbox", "Cuadro", "square-dashed-text"), B("stamp", "Sello", "stamp"), B("revStamp", "Sello rev.", "badge-check"),
+    T("eraser", "Borrar", "eraser"), B("penOnly", "Solo lápiz", "pen-tool"), SEP,
     { type: "color", key: "color", label: "Color" }, { type: "color", key: "hlColor", label: "Resalte" }, { type: "select", key: "fontSize", label: "Letra", options: [8, 9, 10, 11, 12, 14, 16, 18, 24, 36] },
-    SEP, B("pComments", "Lista", "list"), B("summary", "Resumen", "file-text"), B("delComments", "Quitar todo", "trash-2")] },
+    SEP, B("pComments", "Lista", "list"), B("summary", "Informe", "sheet"), B("delComments", "Quitar todo", "trash-2")] },
+  { id: "medir", label: "Medir", icon: "ruler", items: [
+    ...NAV, T("annsel", "Elegir", "mouse-pointer-click"), SEP, B("scale", "Escala 1:N", "scaling"), T("calib", "Calibrar", "ruler-dimension-line"),
+    SEP, T("distance", "Distancia", "ruler"), T("perimeter", "Perímetro", "spline"), T("area", "Área", "pentagon"), T("angle", "Ángulo", "triangle-right"),
+    SEP, T("count", "Contar", "hash"), B("countCat", "Categoría", "tag"), B("countReport", "Recuento", "list-ordered"),
+    SEP, { type: "color", key: "color", label: "Color" }, B("pComments", "Medidas", "list"), B("measExport", "A Excel", "sheet"),
+    SEP, B("pLayers", "Capas", "layers"), B("overlay", "Superponer", "blend")] },
   { id: "editar", label: "Editar", icon: "text-select", items: [
-    ...NAV, SEP, T("edittext", "Editar texto", "text-select"), T("addtext", "Añadir texto", "type"), B("addImage", "Imagen", "image-plus"),
+    ...NAV, T("annsel", "Elegir", "mouse-pointer-click"), SEP, B("copy", "Copiar", "copy"), B("cut", "Cortar", "scissors"), B("paste", "Pegar", "clipboard-paste"),
+    SEP, T("edittext", "Editar línea", "text-select"), T("editpara", "Editar párrafo", "pilcrow"), T("addtext", "Añadir texto", "type"), T("editimg", "Mover imagen", "image"), B("addImage", "Añadir imagen", "image-plus"),
     SEP, B("watermark", "Marca agua", "droplet"), B("background", "Fondo", "paint-bucket"), B("headerFooter", "Encabezado", "panel-top"), B("bates", "Numerar", "list-ordered"),
     SEP, B("flatten", "Aplanar", "layers"), B("props", "Propiedades", "info")] },
   { id: "paginas", label: "Páginas", icon: "layout-grid", items: [
     B("pThumbs", "Miniaturas", "layout-grid"), SEP, B("insert", "Insertar", "file-plus"), B("delete", "Eliminar", "file-x"), B("extract", "Extraer", "file-output"),
-    B("move", "Mover", "arrow-down-up"), B("duplicate", "Duplicar", "copy"), B("rotL", "Girar izq.", "rotate-ccw"), B("rotR", "Girar der.", "rotate-cw"), B("crop", "Recortar", "crop"),
+    B("pgCopy", "Copiar pág.", "copy"), B("pgCut", "Cortar pág.", "scissors"), B("pgPaste", "Pegar pág.", "clipboard-paste"), SEP,
+    B("move", "Mover", "arrow-down-up"), B("duplicate", "Duplicar", "copy-plus"), B("rotL", "Girar izq.", "rotate-ccw"), B("rotR", "Girar der.", "rotate-cw"), B("crop", "Recortar", "crop"),
     SEP, B("combine", "Combinar", "combine"), B("split", "Dividir", "split"), B("replace", "Reemplazar", "replace"), B("reverse", "Invertir", "arrow-up-down"),
     SEP, B("bmAdd", "Marcador", "bookmark-plus"), B("bmHeadings", "Índice auto", "heading")] },
   { id: "formulario", label: "Formulario", icon: "text-cursor-input", items: [
     ...NAV, SEP, B("f:text", "Texto", "text-cursor-input"), B("f:check", "Casilla", "square-check"), B("f:radio", "Opción", "circle-dot"), B("f:combo", "Desplegable", "chevron-down-square"),
     B("f:list", "Lista", "list"), B("f:date", "Fecha", "calendar"), B("f:button", "Botón", "rectangle-horizontal"), B("f:signature", "Campo firma", "signature"),
+    SEP, B("fAlign", "Alinear", "align-start-vertical"), B("fTabs", "Orden tab.", "arrow-right-to-line"),
     SEP, B("fHighlight", "Resaltar", "highlighter"), B("fApply", "Aplicar", "check"), B("fImport", "Importar", "file-input"), B("fExport", "Exportar", "file-output"), B("fReset", "Vaciar", "rotate-ccw"), B("flatten", "Aplanar", "layers")] },
   { id: "firmar", label: "Firmar", icon: "file-signature", items: [
-    B("sign", "Firmar", "file-signature"), B("certify", "Certificar", "badge-check"), B("validate", "Validar", "shield-check"), B("handSign", "Manuscrita", "pen-tool"), B("identity", "Certificado", "id-card"),
+    B("sign", "Firmar", "file-signature"), B("signBatch", "Por lotes", "files"), B("certify", "Certificar", "badge-check"), B("validate", "Validar", "shield-check"), B("ltv", "LTV", "history"), B("handSign", "Manuscrita", "pen-tool"), B("identity", "Certificado", "id-card"),
     SEP, B("password", "Contraseña", "lock"), B("secInfo", "Seguridad", "shield"),
     SEP, T("redact", "Censurar", "square-dashed"), B("redactSearch", "Buscar datos", "scan-search"), B("redactApply", "Aplicar", "eraser"), B("sanitize", "Depurar", "brush-cleaning")] },
   { id: "convertir", label: "Convertir", icon: "scan-text", items: [
-    B("ocr", "OCR", "scan-text"), B("scan", "Escanear", "scan-line"), B("fromImages", "Desde fotos", "images"), B("blank", "En blanco", "file"),
-    SEP, B("toImages", "A imágenes", "file-image"), B("toText", "A texto", "file-type"), B("optimize", "Reducir", "package"),
+    B("ocr", "OCR", "scan-text"), B("ocrZone", "Zona a tabla", "table"), B("scan", "Escanear", "scan-line"), B("fromImages", "Desde fotos", "images"), B("blank", "En blanco", "file"),
+    SEP, B("toImages", "A imágenes", "file-image"), B("toText", "A texto", "file-type"), B("optimize", "Reducir", "package"), B("pdfa", "A PDF/A", "archive"),
     B("toWord", "A Word", "file-text", { soon: true }), B("toExcel", "A Excel", "sheet", { soon: true }),
-    SEP, B("compare", "Comparar", "git-compare"), B("wordCount", "Palabras", "whole-word"), B("a11y", "Accesible", "accessibility")] },
+    SEP, B("overlay", "Superponer", "blend"), B("compareVisual", "Comparar planos", "layers-2"), B("compare", "Comparar texto", "git-compare"), B("wordCount", "Palabras", "whole-word"), B("a11y", "Accesible", "accessibility")] },
 ];
 
 export const BACKSTAGE = [
@@ -95,5 +104,5 @@ export class Ribbon {
     this.setActiveTool(this.app.tools?.tool || "hand");
     this.app.relayout?.();
   }
-  setActiveTool(tool) { this.ctxEl.querySelectorAll(".cbtn").forEach(b => b.classList.toggle("on", b.dataset.id === "tool:" + tool)); }
+  setActiveTool(tool) { this.ctxEl.querySelectorAll(".cbtn").forEach(b => b.classList.toggle("on", b.dataset.id === "tool:" + tool || (b.dataset.id === "penOnly" && !!settings.data.penOnly))); }
 }

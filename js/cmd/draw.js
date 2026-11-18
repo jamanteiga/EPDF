@@ -12,19 +12,53 @@ export const STAMPS = [
   ["RECIBIDO", "#2e7d32"], ["COPIA", "#455a64"], ["PARA INFORMACIÓN", "#1565c0"], ["NO VÁLIDO", "#c62828"], ["CONFORME", "#2e7d32"],
 ];
 export function stampCanvas(text, color, withDate = true, author = settings.data.author) {
-  const S = 3, fs = 30 * S; const c = document.createElement("canvas"); const ctx = c.getContext("2d");
-  ctx.font = `bold ${fs}px Helvetica, Arial, sans-serif`;
   const sub = withDate ? [new Date().toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }), author].filter(Boolean).join(" · ") : "";
-  const w1 = ctx.measureText(text).width; ctx.font = `${fs * 0.42}px Helvetica, Arial, sans-serif`; const w2 = sub ? ctx.measureText(sub).width : 0;
-  const pad = 14 * S; c.width = Math.ceil(Math.max(w1, w2) + pad * 2); c.height = Math.ceil(fs * (sub ? 1.75 : 1.2) + pad);
+  return stampCanvasLines(text, color, sub ? [sub] : []);
+}
+/** Sello con título y varias líneas de datos */
+export function stampCanvasLines(text, color, lines = []) {
+  const S = 3, fs = 30 * S, ss = fs * 0.42; const c = document.createElement("canvas"); const ctx = c.getContext("2d");
+  ctx.font = `bold ${fs}px Helvetica, Arial, sans-serif`; const w1 = ctx.measureText(text).width;
+  ctx.font = `${ss}px Helvetica, Arial, sans-serif`; const w2 = Math.max(0, ...lines.map(l => ctx.measureText(l).width));
+  const pad = 14 * S; c.width = Math.ceil(Math.max(w1, w2) + pad * 2); c.height = Math.ceil(fs * 1.2 + lines.length * ss * 1.35 + pad + (lines.length ? ss * 0.3 : 0));
   ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 4 * S;
   const r = 10 * S, W = c.width, H = c.height, o = ctx.lineWidth / 2;
   ctx.beginPath(); ctx.roundRect ? ctx.roundRect(o, o, W - 2 * o, H - 2 * o, r) : ctx.rect(o, o, W - 2 * o, H - 2 * o); ctx.stroke();
   ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
   ctx.font = `bold ${fs}px Helvetica, Arial, sans-serif`; ctx.fillText(text, W / 2, pad / 2 + fs * 0.95);
-  if (sub) { ctx.font = `${fs * 0.42}px Helvetica, Arial, sans-serif`; ctx.fillText(sub, W / 2, pad / 2 + fs * 1.55); }
+  if (lines.length) {
+    ctx.lineWidth = 1.5 * S; ctx.beginPath(); ctx.moveTo(pad, pad / 2 + fs * 1.18); ctx.lineTo(W - pad, pad / 2 + fs * 1.18); ctx.stroke();
+    ctx.font = `${ss}px Helvetica, Arial, sans-serif`; lines.forEach((l, i) => ctx.fillText(l, W / 2, pad / 2 + fs * 1.2 + ss * (1.25 + i * 1.35)));
+  }
   return c;
 }
+
+// ---------- sello de revisión con datos ----------
+const REV_STATES = ["REVISADO", "APROBADO", "APROBADO CON COMENTARIOS", "CON COMENTARIOS", "RECHAZADO", "PARA INFORMACIÓN", "PARA CONSTRUCCIÓN", "ANULADO"];
+const revColor = (t) => /RECHAZ|ANULAD|NO V/.test(t) ? "#c62828" : /COMENTARIOS/.test(t) ? "#e65100" : /APROBADO|CONSTRUCCI|CONFORME/.test(t) ? "#2e7d32" : "#1565c0";
+export async function reviewStamp(app) {
+  if (!app.active) return ui.toast("Abra un documento primero");
+  const p = settings.data.revStamp || {};
+  const today = new Date(); const iso = new Date(today - today.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+  const r = await ui.form("Sello de revisión", [
+    { name: "text", label: "Estado", type: "select", value: p.text || "REVISADO", options: REV_STATES },
+    { name: "custom", label: "…o texto propio", value: "", placeholder: "Ej.: VISTO BUENO DF" },
+    { name: "name", label: "Revisado por", value: p.name || settings.data.author || "" },
+    { name: "date", label: "Fecha", type: "date", value: iso },
+    { name: "rev", label: "Nº de revisión", value: p.rev || "", placeholder: "Ej.: B" },
+    { name: "ref", label: "Proyecto / referencia (opcional)", value: p.ref || "" },
+    { name: "color", label: "Color", type: "select", value: p.color || "auto", options: [["auto", "Según el estado"], ["#2e7d32", "Verde"], ["#1565c0", "Azul"], ["#e65100", "Naranja"], ["#c62828", "Rojo"], ["#455a64", "Gris"]] },
+  ], { okText: "Colocar" });
+  if (!r) return;
+  settings.data.revStamp = { text: r.text, name: r.name, rev: r.rev, ref: r.ref, color: r.color }; settings.save();
+  const title = (r.custom.trim() || r.text).toUpperCase();
+  const fecha = r.date ? r.date.split("-").reverse().join("/") : "";
+  const lines = [[r.rev && "Rev. " + r.rev, fecha].filter(Boolean).join(" · "), r.name && "Por: " + r.name, r.ref].filter(Boolean);
+  const cv = stampCanvasLines(title, r.color === "auto" ? revColor(title) : r.color, lines);
+  const bytes = await canvasPng(cv); const label = [title, ...lines].join(" · ");
+  app.tools.set("image", { bytes, aspect: cv.height / cv.width, w: 170, label: "Sello " + title, contents: label, hint: "toque o arrastre donde colocar el sello" });
+}
+
 export async function stamp(app) {
   if (!app.active) return ui.toast("Abra un documento primero");
   const wrap = document.createElement("div"); wrap.className = "stamp-grid";
@@ -62,6 +96,12 @@ const dataUrlBytes = (u) => { const b = atob(u.split(",")[1]); const a = new Uin
 
 export async function handSignature(app) {
   if (!app.active) return ui.toast("Abra un documento primero");
+  const r = await signaturePad();
+  if (r) app.tools.set("image", { bytes: r.png, aspect: r.aspect, w: 150, label: "Firma manuscrita", contents: "Firma manuscrita", hint: "toque o arrastre donde colocar la firma" });
+}
+export function savedSignatures() { return loadSigs().map(s => ({ png: dataUrlBytes(s.png), aspect: s.aspect, dataUrl: s.png })); }
+/** Panel para dibujar (o elegir) una firma manuscrita. Devuelve { png, aspect } o null */
+export async function signaturePad(okText = "Colocar firma") {
   const saved = loadSigs();
   const box = document.createElement("div"); box.className = "sigpad-wrap";
   box.innerHTML = `<div class="saved-sigs"></div>
@@ -89,13 +129,13 @@ export async function handSignature(app) {
   let pickSaved = null;
   const sv = box.querySelector(".saved-sigs");
   if (saved.length) { sv.innerHTML = "<small>Firmas guardadas (toque para usar):</small>"; saved.forEach((s, k) => { const b = document.createElement("button"); b.className = "saved-sig"; b.innerHTML = `<img src="${s.png}" alt="firma ${k + 1}"><span title="Eliminar">✕</span>`; b.onclick = (e) => { if (e.target.tagName === "SPAN") { saved.splice(k, 1); saveSigs(saved); b.remove(); return; } pickSaved = s; box.closest(".modal").querySelector(".primary").click(); }; sv.appendChild(b); }); }
-  const ok = await ui.modal("Firma manuscrita", box, [{ text: "Cancelar", value: false }, { text: "Colocar firma", value: true, primary: true }], { wide: true, onOpen: () => setTimeout(fit, 50) });
-  if (!ok) return;
+  const ok = await ui.modal("Firma manuscrita", box, [{ text: "Cancelar", value: false }, { text: okText, value: true, primary: true }], { wide: true, onOpen: () => setTimeout(fit, 50) });
+  if (!ok) return null;
   let png, aspect;
   if (pickSaved) { png = dataUrlBytes(pickSaved.png); aspect = pickSaved.aspect; }
   else if (fromImg) { png = fromImg.bytes; aspect = fromImg.h / fromImg.w; }
   else {
-    if (!strokes.length) return ui.toast("No ha firmado");
+    if (!strokes.length) { ui.toast("No ha firmado"); return null; }
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const s of strokes) for (const p of s.p) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
     const m = 8, S = 3; const out = document.createElement("canvas"); out.width = (x1 - x0 + 2 * m) * S; out.height = (y1 - y0 + 2 * m) * S;
     const c2 = out.getContext("2d"); c2.setTransform(S, 0, 0, S, -(x0 - m) * S, -(y0 - m) * S); c2.lineCap = c2.lineJoin = "round";
@@ -103,7 +143,7 @@ export async function handSignature(app) {
     png = await canvasPng(out); aspect = out.height / out.width;
     if (box.querySelector('[name="keep"]').checked) { saved.unshift({ png: out.toDataURL("image/png"), aspect }); saveSigs(saved); }
   }
-  app.tools.set("image", { bytes: png, aspect, w: 150, label: "Firma manuscrita", contents: "Firma manuscrita", hint: "toque o arrastre donde colocar la firma" });
+  return { png, aspect };
 }
 
 // ================= IMAGEN =================

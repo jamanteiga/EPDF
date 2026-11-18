@@ -104,8 +104,33 @@ export function parsePageRanges(s, count) { // "1-3,5,8-" -> índices 0-based
 }
 export const settings = {
   _k: "epdf.settings",
-  data: { author: "", color: "#e53935", hlColor: "#ffeb3b", fontSize: 12, ocrLang: "spa", afStorage: "", afRetriever: "", sigReason: "", sigLocation: "", lastMethod: "p12" },
+  data: { author: "", color: "#e53935", hlColor: "#ffeb3b", fontSize: 12, ocrLang: "spa", afStorage: "", afRetriever: "", sigReason: "", sigLocation: "", lastMethod: "p12", theme: "light", lang: "es" },
   load() { try { Object.assign(this.data, JSON.parse(localStorage.getItem(this._k) || "{}")); } catch {} return this.data; },
   save() { try { localStorage.setItem(this._k, JSON.stringify(this.data)); } catch {} },
 };
 settings.load();
+
+// ---------- Web Worker para operaciones pesadas ----------
+let _w = null, _wid = 0; const _pending = new Map();
+function worker() {
+  if (_w === false) return null;
+  if (!_w) {
+    try {
+      _w = new Worker(new URL("./muworker.js", import.meta.url), { type: "module" });
+      _w.onmessage = (e) => { const { id, progress, ok, r, err } = e.data; const p = _pending.get(id); if (!p) return; if (progress != null) return p.onProgress?.(progress); _pending.delete(id); ok ? p.res(r) : p.rej(new Error(err)); };
+      _w.onerror = (e) => { console.warn("worker", e.message); for (const p of _pending.values()) p.rej(new Error("Fallo del proceso en segundo plano")); _pending.clear(); _w = false; };
+    } catch (e) { console.warn("sin worker", e); _w = false; return null; }
+  }
+  return _w;
+}
+/** Ejecuta una operación de muops.js en segundo plano (o en el hilo principal si no hay Worker) */
+export async function muJob(op, args, onProgress) {
+  const w = worker();
+  if (w) {
+    try {
+      return await new Promise((res, rej) => { const id = ++_wid; _pending.set(id, { res, rej, onProgress }); w.postMessage({ id, op, args }); });
+    } catch (e) { if (!/segundo plano/.test(e.message)) throw e; }
+  }
+  const { OPS } = await import("./muops.js");
+  return OPS[op](...args, onProgress);
+}

@@ -1,0 +1,9 @@
+name = "epdf-proxy"
+main = "epdf-proxy-worker.js"
+compatibility_date = "2024-09-01"
+
+[vars]
+# Limite el uso a su web (recomendado), p. ej. "https://usuario.github.io"
+ALLOW_ORIGIN = "*"
+# Dominios adicionales permitidos, separados por comas
+ALLOW_HOSTS = ""
