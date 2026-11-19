@@ -1,6 +1,6 @@
 // ePDF — Revisar, Marcadores, Accesibilidad, Propiedades
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { download, baseName, fmtBytes } from "../core/engine.js";
+import { download, baseName, fmtBytes, pdflib } from "../core/engine.js";
 import * as A from "./annot.js";
 import * as ui from "../ui/dialogs.js";
 
@@ -60,11 +60,61 @@ export async function compare(app) {
 export async function listComments(app) { const d = app.active; if (!d) return []; return A.listAnnots(await d.muDoc()); }
 export async function summarizeComments(app) {
   const d = app.active; if (!d) return;
-  const list = await listComments(app);
-  if (!list.length) return ui.alert("Resumir comentarios", "El documento no tiene comentarios.");
-  const rows = list.map(c => `<tr><td>${c.page + 1}</td><td>${typeEs(c.type)}</td><td>${ui.esc(c.author)}</td><td>${c.date ? new Date(c.date).toLocaleString("es-ES") : ""}</td><td>${ui.esc(c.contents)}</td></tr>`).join("");
-  const html = `<!doctype html><meta charset="utf-8"><title>Comentarios — ${ui.esc(d.name)}</title><style>body{font:13px system-ui;margin:2em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:4px 6px;vertical-align:top;text-align:left}th{background:#f3f3f3}</style><h2>Resumen de comentarios</h2><p>${ui.esc(d.name)} · ${list.length} comentario(s) · ${new Date().toLocaleString("es-ES")}</p><table><tr><th>Pág.</th><th>Tipo</th><th>Autor</th><th>Fecha</th><th>Texto</th></tr>${rows}</table>`;
-  download(html, baseName(d.name) + "_comentarios.html", "text/html");
+  const all = await listComments(app);
+  if (!all.length) return ui.alert("Informe de comentarios", "El documento no tiene comentarios.");
+  const list = A.threadAnnots(all);
+  const r = await ui.form("Informe de comentarios", [
+    { name: "fmt", label: "Formato", type: "select", value: "xlsx", options: [["xlsx", "Excel (.xlsx)"], ["pdf", "PDF"], ["html", "Página web (.html)"]] },
+    { name: "only", label: "Incluir", type: "select", value: "", options: [["", "Todos"], ["pend", "Solo pendientes"], ["Accepted", "Solo aceptados"], ["Rejected", "Solo rechazados"]] },
+  ], { okText: "Generar", intro: `<small>${list.length} comentario(s) · ${all.length - list.length} respuesta(s) o cambio(s) de estado</small>` });
+  if (!r) return;
+  const rows = list.filter(a => r.only === "pend" ? !a.status || a.status === "None" : !r.only || a.status === r.only);
+  const fd = (x) => x ? new Date(x).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }) : "";
+  const reps = (a) => a.replies.map(x => `${x.author || "—"} (${fd(x.date)}): ${x.contents}`);
+  const name = baseName(d.name) + "_comentarios";
+  if (r.fmt === "xlsx") {
+    const { xlsx, XLSX_MIME } = await import("../core/xlsx.js");
+    download(xlsx([{ name: "Comentarios", rows: [["Nº", "Página", "Tipo", "Autor", "Fecha", "Estado", "Comentario", "Respuestas", "Historial de estado"],
+      ...rows.map((a, k) => [k + 1, a.page + 1, typeEs(a.type), a.author, fd(a.date), A.stateEs(a.status) || "Pendiente", a.contents, reps(a).join("\n"), a.states.map(x => `${A.stateEs(x.state)} · ${x.author || ""} · ${fd(x.date)}`).join("\n")])],
+      widths: [5, 8, 12, 18, 16, 12, 60, 60, 40] }]), name + ".xlsx", XLSX_MIME);
+  } else if (r.fmt === "pdf") {
+    const bytes = await ui.run("Generando informe…", () => commentsPdf(d, rows, fd, reps)); if (bytes) download(bytes, name + ".pdf");
+  } else {
+    const tr = rows.map((a, k) => `<tr><td>${k + 1}</td><td>${a.page + 1}</td><td>${typeEs(a.type)}</td><td>${ui.esc(a.author)}</td><td>${fd(a.date)}</td><td>${A.stateEs(a.status) || "Pendiente"}</td><td>${ui.esc(a.contents)}${reps(a).map(x => `<div class="r">↳ ${ui.esc(x)}</div>`).join("")}</td></tr>`).join("");
+    download(`<!doctype html><meta charset="utf-8"><title>Comentarios — ${ui.esc(d.name)}</title><style>body{font:13px system-ui;margin:2em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:4px 6px;vertical-align:top;text-align:left}th{background:#e8f5ec}.r{color:#555;margin-top:3px}</style><h2>Informe de comentarios</h2><p>${ui.esc(d.name)} · ${rows.length} comentario(s) · ${new Date().toLocaleString("es-ES")}</p><table><tr><th>Nº</th><th>Pág.</th><th>Tipo</th><th>Autor</th><th>Fecha</th><th>Estado</th><th>Comentario y respuestas</th></tr>${tr}</table>`, name + ".html", "text/html");
+  }
+}
+const winAnsi = (s) => String(s ?? "").normalize("NFC").replace(/[\r\t]/g, " ").replace(/[^\n\x20-\x7E\xA0-\xFF€–—‘’“”•…]/g, "?");
+async function commentsPdf(d, rows, fd, reps) {
+  const PL = await pdflib(); const out = await PL.PDFDocument.create();
+  const F = await out.embedFont(PL.StandardFonts.Helvetica), FB = await out.embedFont(PL.StandardFonts.HelveticaBold);
+  const W = 842, H = 595, M = 36, fs = 8.5, lh = 11;
+  const cols = [["Nº", 22], ["Pág.", 28], ["Tipo", 62], ["Autor", 86], ["Fecha", 66], ["Estado", 62], ["Comentario y respuestas", W - 2 * M - 326]];
+  const wrap = (txt, w, font = F) => { const out = []; for (const para of winAnsi(txt).split("\n")) { let line = ""; for (const word of para.split(/\s+/)) { const t = line ? line + " " + word : word; if (font.widthOfTextAtSize(t, fs) <= w) line = t; else { if (line) out.push(line); let wd = word; while (font.widthOfTextAtSize(wd, fs) > w) { let k = wd.length; while (k > 1 && font.widthOfTextAtSize(wd.slice(0, k), fs) > w) k--; out.push(wd.slice(0, k)); wd = wd.slice(k); } line = wd; } } out.push(line); } return out; };
+  let pg, y, n = 0;
+  const header = () => {
+    pg = out.addPage([W, H]); n++; y = H - M;
+    pg.drawText(winAnsi("Informe de comentarios — " + d.name), { x: M, y, size: 13, font: FB, color: PL.rgb(0.09, 0.4, 0.2) });
+    pg.drawText(winAnsi(`${rows.length} comentario(s) · ${new Date().toLocaleString("es-ES")} · página ${n}`), { x: M, y: y - 15, size: 8, font: F, color: PL.rgb(0.4, 0.4, 0.4) });
+    y -= 34; let x = M;
+    pg.drawRectangle({ x: M, y: y - 4, width: W - 2 * M, height: lh + 5, color: PL.rgb(0.91, 0.96, 0.93) });
+    for (const [t, w] of cols) { pg.drawText(t, { x: x + 3, y, size: fs, font: FB }); x += w; }
+    y -= lh + 6;
+  };
+  header();
+  for (const [k, a] of rows.entries()) {
+    const main = wrap(a.contents || "—", cols[6][1] - 6, F), rep = reps(a).flatMap(t => wrap("» " + t, cols[6][1] - 14, F));
+    const cells = [String(k + 1), String(a.page + 1), typeEs(a.type), a.author || "", fd(a.date), A.stateEs(a.status) || "Pendiente"].map((t, j) => wrap(t, cols[j][1] - 6));
+    const nl = Math.max(main.length + rep.length, ...cells.map(c => c.length));
+    if (y - nl * lh < M) header();
+    let x = M;
+    for (const [j, c] of cells.entries()) { c.forEach((t, i) => pg.drawText(t, { x: x + 3, y: y - i * lh, size: fs, font: j === 5 ? FB : F, color: j === 5 ? (a.status === "Rejected" ? PL.rgb(0.6, 0.1, 0.1) : a.status === "Accepted" || a.status === "Completed" ? PL.rgb(0.09, 0.4, 0.2) : PL.rgb(0.2, 0.2, 0.2)) : PL.rgb(0, 0, 0) })); x += cols[j][1]; }
+    main.forEach((t, i) => pg.drawText(t, { x: x + 3, y: y - i * lh, size: fs, font: F }));
+    rep.forEach((t, i) => pg.drawText(t, { x: x + 11, y: y - (main.length + i) * lh, size: fs, font: F, color: PL.rgb(0.35, 0.35, 0.35) }));
+    y -= nl * lh + 4;
+    pg.drawLine({ start: { x: M, y: y + lh - 4 }, end: { x: W - M, y: y + lh - 4 }, thickness: 0.4, color: PL.rgb(0.8, 0.8, 0.8) });
+  }
+  return out.save();
 }
 export async function deleteAllComments(app) {
   const d = app.active; if (!d) return;
@@ -173,4 +223,61 @@ export async function readAloud(app, what = "page") {
     }
   }
   speaking = false;
+}
+
+// --------- comparar planos (superposición visual) ---------
+export async function compareVisual(app, pre = null) {
+  if (app.docs.length < 2) return ui.alert("Comparar planos", "Abra las dos revisiones del plano o documento (cada una en su pestaña).");
+  const opts = app.docs.map((d, k) => [k, d.name]);
+  const r = await ui.form("Comparar planos", [
+    { name: "a", label: "Revisión anterior (en rojo lo eliminado)", type: "select", value: pre?.a ?? 0, options: opts },
+    { name: "b", label: "Revisión nueva (en azul lo añadido)", type: "select", value: pre?.b ?? 1, options: opts },
+    { name: "range", label: "Páginas de la revisión anterior", value: "1-" },
+    { name: "offset", label: "La página 1 anterior corresponde a la página nº de la nueva", type: "number", value: pre?.offset ?? 1, min: 1 },
+    { name: "dpi", label: "Resolución", type: "select", value: "150", options: [["100", "100 ppp (rápido)"], ["150", "150 ppp"], ["200", "200 ppp (detalle fino)"]] },
+    { name: "tol", label: "Sensibilidad", type: "select", value: "60", options: [["35", "Alta (detecta cambios sutiles)"], ["60", "Media"], ["100", "Baja (ignora diferencias de suavizado)"]] },
+  ], { okText: "Comparar", intro: (pre?.M ? "<p><b>Se aplicará la alineación por 2 puntos</b> definida en la superposición.</p>" : "") + "<small>Superpone las dos revisiones: <b style='color:#dc2626'>rojo</b> = solo en la anterior (eliminado), <b style='color:#1665dc'>azul</b> = solo en la nueva (añadido), gris = sin cambios. Las zonas con cambios se recuadran en naranja.</small>" });
+  if (!r) return;
+  const da = app.docs[+r.a], db = app.docs[+r.b];
+  if (da === db) return ui.alert("Comparar planos", "Elija dos documentos distintos.");
+  const { parsePageRanges, pdflib, baseName } = await import("../core/engine.js");
+  const { muJob } = await import("../core/engine.js");
+  const pages = parsePageRanges(r.range, da.numPages); const k = +r.dpi / 72; const off = (+r.offset || 1) - 1;
+  const summary = []; const imgs = [];
+  const ok = await ui.run("Comparando…", async (b) => {
+    for (const [n, i] of pages.entries()) {
+      const j = i + off; if (j >= db.numPages) break;
+      b.set(`Página ${i + 1} de ${da.numPages}…`, n / pages.length);
+      const pa = await da.pdf.getPage(i + 1), pb = await db.pdf.getPage(j + 1);
+      const va = pa.getViewport({ scale: k }); const W = Math.ceil(va.width), H = Math.ceil(va.height);
+      const vb1 = pb.getViewport({ scale: 1 }); const va1 = pa.getViewport({ scale: 1 }); const M = pre?.M; const vb = pb.getViewport({ scale: M || Math.abs(va1.width - vb1.width) < 1 ? k : k * va1.width / vb1.width });
+      const ca = document.createElement("canvas"), cb = document.createElement("canvas"); ca.width = cb.width = W; ca.height = cb.height = H;
+      const xa = ca.getContext("2d", { willReadFrequently: true }), xb = cb.getContext("2d", { willReadFrequently: true });
+      xa.fillStyle = xb.fillStyle = "#fff"; xa.fillRect(0, 0, W, H); xb.fillRect(0, 0, W, H);
+      await pa.render({ canvasContext: xa, canvas: ca, viewport: va }).promise; await pb.render({ canvasContext: xb, canvas: cb, viewport: vb, ...(M ? { transform: [M[0], M[1], M[2], M[3], M[4] * k, M[5] * k] } : {}) }).promise;
+      const res = await muJob("diff", [xa.getImageData(0, 0, W, H).data, xb.getImageData(0, 0, W, H).data, W, H, +r.tol]);
+      xa.putImageData(new ImageData(res.rgba, W, H), 0, 0);
+      xa.strokeStyle = "#f97316"; xa.lineWidth = Math.max(2, 2 * k);
+      for (const z of res.rects) xa.strokeRect(z[0] - 4, z[1] - 4, z[2] - z[0] + 8, z[3] - z[1] + 8);
+      const blob = await new Promise(rs => ca.toBlob(rs, "image/jpeg", 0.85));
+      imgs.push({ i, j, w: va.width / k, h: va.height / k, bytes: new Uint8Array(await blob.arrayBuffer()), zones: res.rects.length, removed: res.removed, added: res.added });
+      summary.push({ i, j, zones: res.rects.length });
+      ca.width = cb.width = 0;
+    }
+    const PL = await pdflib(); const out = await PL.PDFDocument.create(); const font = await out.embedFont(PL.StandardFonts.Helvetica);
+    for (const im of imgs) {
+      const pg = out.addPage([im.w, im.h]); const jp = await out.embedJpg(im.bytes);
+      pg.drawImage(jp, { x: 0, y: 0, width: im.w, height: im.h });
+      const t = `Anterior p.${im.i + 1} / Nueva p.${im.j + 1} · ${im.zones ? im.zones + " zona(s) con cambios" : "sin cambios"}`;
+      const fs = Math.max(7, Math.min(11, im.w / 60)); const tw = font.widthOfTextAtSize(t, fs);
+      pg.drawRectangle({ x: 6, y: im.h - fs * 2 - 6, width: tw + 12, height: fs * 2, color: PL.rgb(1, 1, 1), opacity: 0.9, borderColor: PL.rgb(0.98, 0.45, 0.09), borderWidth: 1 });
+      pg.drawText(t, { x: 12, y: im.h - fs * 1.4 - 6, size: fs, font, color: PL.rgb(0.1, 0.1, 0.1) });
+    }
+    out.setTitle(`Comparación ${da.name} – ${db.name}`);
+    await app.openBytes(await out.save(), `Comparación_${baseName(da.name)}_vs_${baseName(db.name)}.pdf`, { recent: false });
+    return true;
+  });
+  if (!ok) return;
+  const changed = summary.filter(s => s.zones);
+  ui.alert("Comparar planos", changed.length ? `Se han encontrado cambios en <b>${changed.length}</b> de ${summary.length} página(s):<br>${changed.map(s => `Página ${s.i + 1}: ${s.zones} zona(s)`).join("<br>")}<br><br>El resultado se ha abierto en una pestaña nueva; puede anotarlo y guardarlo.` : `No hay diferencias visibles en las ${summary.length} página(s) comparadas.`);
 }

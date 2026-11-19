@@ -59,6 +59,7 @@ export function form(title, fields, { okText = "Aceptar", wide = false, intro = 
       input = document.createElement("input"); input.type = fd.type || "text";
       if (fd.type === "checkbox") input.checked = !!fd.value; else if (fd.type !== "file") input.value = fd.value ?? "";
       for (const k of ["min", "max", "step", "accept", "placeholder", "autocomplete"]) if (fd[k] != null) input.setAttribute(k, fd[k]);
+      if (fd.multiple) input.multiple = true;
     }
     input.name = fd.name;
     if (fd.type === "checkbox") { row.appendChild(input); row.append(" " + fd.label); }

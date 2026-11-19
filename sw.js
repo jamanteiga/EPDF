@@ -1,12 +1,14 @@
 // ePDF — service worker: funcionamiento sin conexión
 // SPDX-License-Identifier: AGPL-3.0-or-later
-const VERSION = "epdf-1.1.0";
+const VERSION = "epdf-1.3.0";
 const CORE = [
   "./", "index.html", "manifest.webmanifest", "css/app.css", "css/pdfjs-layers.css", "icons/icon.svg", "icons/icon-192.png",
   "js/app.js", "js/core/engine.js", "js/core/doc.js", "js/core/viewer.js", "js/core/tools.js", "js/core/geom.js",
   "js/ui/modebar.js", "js/ui/sidebar.js", "js/ui/dialogs.js", "js/ui/icons.js",
   "js/cmd/annot.js", "js/cmd/organize.js", "js/cmd/forms.js", "js/cmd/protect.js", "js/cmd/draw.js", "js/cmd/convert.js", "js/cmd/review.js",
-  "js/sign/pades.js", "js/sign/autofirma.js",
+  "js/sign/pades.js", "js/sign/autofirma.js", "js/sign/trust-es.js",
+  "js/core/muops.js", "js/core/muworker.js", "js/core/formrt.js", "js/cmd/clip.js", "js/cmd/measure.js", "js/ui/i18n.js",
+  "js/core/xlsx.js", "js/cmd/plans.js", "js/cmd/zone.js", "js/cmd/pdfa.js", "js/sign/ltv.js",
   "vendor/pdfjs/pdf.min.mjs", "vendor/pdfjs/pdf.worker.min.mjs", "vendor/pdf-lib.esm.min.js", "vendor/forge.min.js",
   "vendor/mupdf/mupdf.js", "vendor/mupdf/mupdf-wasm.js", "vendor/mupdf/mupdf-wasm.wasm",
 ];
