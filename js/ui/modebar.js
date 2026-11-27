@@ -6,7 +6,7 @@ import { settings } from "../core/engine.js";
 const B = (id, label, ic, extra = {}) => ({ id, label, icon: ic, ...extra });
 const T = (tool, label, ic) => ({ id: "tool:" + tool, tool, label, icon: ic });
 const SEP = { sep: true };
-const NAV = [T("hand", "Mano", "hand"), T("select", "Seleccionar", "text-cursor")];
+const NAV = [T("hand", "Mano", "hand"), T("select", "Seleccionar", "text-cursor"), T("para", "Párrafo", "pilcrow")];
 
 export const MODES = [
   { id: "leer", label: "Leer", icon: "file-text", items: [

@@ -381,3 +381,7 @@ del { background: #fdd; color: #900; } ins { background: #d6f5d6; color: #060; t
 .ztab table { border-collapse: collapse; font-size: 12px; width: 100%; }
 .ztab td { border: 1px solid var(--line); padding: 3px 6px; white-space: nowrap; }
 .ztab tr:first-child td { background: var(--accent-soft); font-weight: 600; }
+/* ---- selección de párrafo (Ctrl/⌘ + clic) ---- */
+.parabar { flex-wrap: wrap; max-width: min(92vw, 720px); }
+.parabar button { display: inline-flex; align-items: center; gap: 4px; }
+.parabar .ic { width: 16px; height: 16px; }

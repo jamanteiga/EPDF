@@ -141,3 +141,23 @@ test("convertir a PDF/A-2b", async ({ page }) => {
   const ok = await page.evaluate(async () => { const d = await window.epdf.active.muDoc(); const r = d.getTrailer().get("Root"); return !r.get("OutputIntents").isNull() && !r.get("Metadata").isNull(); });
   expect(ok).toBe(true);
 });
+
+test("Ctrl+clic selecciona un párrafo y permite copiarlo y resaltarlo", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await open(page, "parrafos.pdf");
+  await page.evaluate(([i, y]) => window.epdf.active.viewer.goTo(i, y), [0, 100]); await page.waitForTimeout(500);
+  const pt = await page.evaluate(async () => {
+    const d = await window.epdf.active.muDoc(); const js = JSON.parse(d.loadPage(0).toStructuredText().asJSON());
+    const b = js.blocks.filter(x => x.type === "text")[1].bbox; const v = window.epdf.active.viewer, p = v.pages[0];
+    const l = v.fzToLocal(p, b.x + b.w / 2, b.y + b.h / 2); const r = p.div.getBoundingClientRect(); return [r.left + l[0], r.top + l[1]];
+  });
+  await page.keyboard.down("Control"); await page.mouse.click(pt[0], pt[1]); await page.keyboard.up("Control");
+  await expect(page.locator(".parabar")).toBeVisible();
+  const txt = await page.evaluate(() => window.epdf.tools.para.text);
+  expect(txt).toMatch(/^La potencia frigorífica total.*zonas ocupadas\.$/);
+  await page.locator('.parabar [data-a="copy"]').click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(txt);
+  await page.locator('.parabar [data-a="highlight"]').click(); await page.waitForTimeout(800);
+  const types = await page.evaluate(async () => { const d = await window.epdf.active.muDoc(); return d.loadPage(0).getAnnotations().map(a => a.getType()); });
+  expect(types).toEqual(["Highlight"]);
+});

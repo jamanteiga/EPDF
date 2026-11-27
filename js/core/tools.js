@@ -5,6 +5,8 @@ import * as A from "../cmd/annot.js";
 import * as MS from "../cmd/measure.js";
 import * as PL from "../cmd/plans.js";
 import * as ui from "../ui/dialogs.js";
+import { icon } from "../ui/icons.js";
+async function copyText(t) { try { await navigator.clipboard.writeText(t); ui.toast("Texto copiado", "ok", 1800); } catch { ui.alert("Copiar", `<textarea style="width:100%;height:220px">${ui.esc(t)}</textarea><p class="sm">Selecciónelo y cópielo.</p>`); } }
 
 const SVGNS = "http://www.w3.org/2000/svg";
 const DRAG = new Set(["ocrzone", "highlight", "underline", "strikeout", "squiggly", "rect", "ellipse", "line", "arrow", "distance", "textbox", "redact", "crop", "snapshot", "sigrect", "image", "field", "annsel", "calib", "editimg"]);
@@ -13,7 +15,7 @@ const POLY = new Set(["perimeter", "area", "angle"]);
 const ONESHOT = new Set(["ocrzone", "sigrect", "crop", "snapshot", "image"]);
 const MARKUP = { highlight: "Highlight", underline: "Underline", strikeout: "StrikeOut", squiggly: "Squiggly" };
 export const TOOL_NAMES = {
-  ocrzone: "Zona a tabla", count: "Contar símbolos", calib: "Calibrar escala", perimeter: "Perímetro", area: "Área", angle: "Ángulo", editpara: "Editar párrafo", editimg: "Editar imágenes",
+  para: "Seleccionar párrafo", ocrzone: "Zona a tabla", count: "Contar símbolos", calib: "Calibrar escala", perimeter: "Perímetro", area: "Área", angle: "Ángulo", editpara: "Editar párrafo", editimg: "Editar imágenes",
   hand: "Mano", select: "Selección de texto", annsel: "Seleccionar comentarios", highlight: "Resaltar", underline: "Subrayar", strikeout: "Tachar", squiggly: "Ondulado",
   rect: "Rectángulo", ellipse: "Elipse", line: "Línea", arrow: "Flecha", distance: "Distancia", ink: "Lápiz", note: "Nota", typewriter: "Máquina de escribir",
   textbox: "Cuadro de texto", addtext: "Añadir texto", edittext: "Editar texto", eraser: "Borrador", redact: "Marcar para censurar", crop: "Recortar",
@@ -25,6 +27,7 @@ export class Tools {
     this.app = app; this.tool = "hand"; this.opts = {}; this.sel = null; this.st = null;
     const host = document.getElementById("viewers");
     host.addEventListener("pointerdown", (e) => this.down(e));
+    host.addEventListener("contextmenu", (e) => { if (e.ctrlKey && !e.target.closest("input,textarea")) e.preventDefault(); }); // macOS: Ctrl+clic = menú contextual
     host.addEventListener("pointermove", (e) => this.move(e));
     host.addEventListener("pointerup", (e) => this.up(e));
     host.addEventListener("pointercancel", () => this.cancel());
@@ -32,6 +35,7 @@ export class Tools {
       if ((e.key === "Delete" || e.key === "Backspace") && this.sel && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)) { e.preventDefault(); this.deleteSelected(); }
       if (e.key === "Enter" && this.poly && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)) { e.preventDefault(); this.polyFinish(); }
       if (e.key === "Escape" && this.poly) { this.polyCancel(); return; }
+      if (e.key === "Escape" && this.para && !document.querySelector(".modal-bg")) { speechSynthesis?.cancel?.(); this.clearPara(); return; }
       if (e.key === "Escape" && !document.querySelector(".modal-bg")) { this.clearSel(); if (this.tool !== "hand" && this.tool !== "select") this.set("hand"); }
     });
   }
@@ -57,7 +61,10 @@ export class Tools {
   down(e) {
     const v = this.viewer; if (!v || e.button > 0) return;
     if (e.pointerType === "touch") { this.touches = this.touches || new Set(); this.touches.add(e.pointerId); if (this.touches.size > 1) { this.pan = null; if (this.st) this.cancel(); return; } }
-    if (e.target.closest(".inline-ed,.annbar")) return;
+    if (e.target.closest(".inline-ed,.annbar,.parabar")) return;
+    if (e.pointerType === "mouse" && (e.ctrlKey || e.metaKey) && !e.altKey) { e.preventDefault(); e.stopPropagation(); this.pickParagraph(e.clientX, e.clientY, e.shiftKey); return; }
+    if (this.para && !e.target.closest(".parabar")) this.clearPara();
+    if (this.tool === "para") { e.preventDefault(); this.pickParagraph(e.clientX, e.clientY, false); return; }
     const hd = e.target.closest(".hdl");
     if (hd && this.sel) { e.preventDefault(); e.stopPropagation(); try { hd.setPointerCapture(e.pointerId); } catch {} this.rs = { id: e.pointerId, corner: hd.dataset.c, ob: [...this.sel.bounds], nb: [...this.sel.bounds] }; return; }
     const t = this.tool;
@@ -321,6 +328,82 @@ export class Tools {
     if (s.kind === "img") return this.doc.withMu("Eliminar imagen", (doc) => { A.removeImage(doc, s.page, s.index); });
     await this.doc.withMu("Eliminar comentario", (doc) => { A.deleteAnnot(doc, s.page, s.index); });
   }
+  // ---------------- selección de párrafo (Ctrl/⌘ + clic, o herramienta Párrafo) ----------------
+  async pickParagraph(cx, cy, add = false) {
+    const v = this.viewer; const p = v?.pageAt(cx, cy); if (!p) return;
+    const pt = v.clientToFz(p, cx, cy);
+    const para = A.paragraphAt(await this.doc.muDoc(), p.i, pt[0], pt[1]);
+    if (!para || !para.text) { if (!add) this.clearPara(); return ui.toast("No hay texto en ese punto" + (this.doc.hasText === false ? " (documento escaneado: aplique OCR)" : ""), "info", 2500); }
+    if (add && this.para && this.para.page === para.page) {
+      if (this.para.parts.some(x => x.rect.join() === para.rect.join())) return;
+      this.para.parts.push(para); this.para.parts.sort((a, b) => a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
+    } else { this.clearPara(); this.para = { page: p.i, parts: [para] }; }
+    const P = this.para; P.text = P.parts.map(x => x.text).join("\n\n"); P.quads = P.parts.flatMap(x => x.quads);
+    P.rect = [Math.min(...P.parts.map(x => x.rect[0])), Math.min(...P.parts.map(x => x.rect[1])), Math.max(...P.parts.map(x => x.rect[2])), Math.max(...P.parts.map(x => x.rect[3]))];
+    this.redrawOverlay(v, v.pages[P.page]); this.showParaBar();
+  }
+  clearPara() {
+    const had = this.para; this.para = null; document.querySelectorAll(".parabar").forEach(n => n.remove());
+    if (had && this.viewer?.pages[had.page]) this.redrawOverlay(this.viewer, this.viewer.pages[had.page]);
+  }
+  showParaBar() {
+    document.querySelectorAll(".parabar").forEach(n => n.remove());
+    const P = this.para, v = this.viewer; if (!P || !v) return; const p = v.pages[P.page];
+    const l = v.fzRectToLocal(p, P.rect);
+    const bar = document.createElement("div"); bar.className = "annbar parabar";
+    const words = P.text.split(/\s+/).filter(Boolean).length;
+    const speakingNow = typeof speechSynthesis !== "undefined" && speechSynthesis.speaking;
+    bar.innerHTML = `<span class="t">${P.parts.length > 1 ? P.parts.length + " párrafos" : "Párrafo"} · ${words} palabras</span>
+      <button data-a="copy" title="Copiar el texto (Ctrl+C)">${icon("copy")}Copiar</button>
+      <button data-a="read" title="Leer en voz alta">${icon(speakingNow ? "square" : "volume-2")}${speakingNow ? "Parar" : "Leer"}</button>
+      <button data-a="highlight" title="Resaltar">${icon("highlighter")}</button>
+      <button data-a="underline" title="Subrayar">${icon("underline")}</button>
+      <button data-a="strike" title="Tachar">${icon("strikethrough")}</button>
+      <button data-a="comment" title="Resaltar con comentario">${icon("message-square")}</button>
+      <button data-a="edit" title="Editar el párrafo">${icon("pencil")}</button>
+      <button data-a="search" title="Buscar este texto en los documentos abiertos">${icon("search")}</button>
+      <button data-a="share" title="Compartir el texto">${icon("share")}</button>
+      <button data-a="redact" title="Marcar para censurar" class="danger">${icon("square-dashed")}</button>
+      <button data-a="x" title="Cerrar (Esc)">✕</button>`;
+    bar.style.left = Math.max(0, l[0]) + "px"; bar.style.top = (l[1] > 48 ? l[1] - 46 : l[3] + 6) + "px";
+    bar.addEventListener("pointerdown", (e) => e.stopPropagation());
+    bar.onclick = (e) => { const a = e.target.closest("[data-a]")?.dataset.a; if (a) this.paraAction(a); };
+    p.div.appendChild(bar);
+  }
+  async paraAction(a) {
+    const P = this.para; if (!P) return; const d = this.doc, i = P.page;
+    if (a === "x") return this.clearPara();
+    if (a === "copy") return copyText(P.text);
+    if (a === "read") {
+      if (!("speechSynthesis" in window)) return ui.toast("Lectura en voz alta no disponible en este navegador");
+      if (speechSynthesis.speaking) { speechSynthesis.cancel(); return this.showParaBar(); }
+      let lang = "es-ES"; try { lang = (await d.muDoc()).getLanguage() || lang; } catch {}
+      const u = new SpeechSynthesisUtterance(P.text); u.lang = lang; u.rate = settings.data.ttsRate || 1;
+      u.onend = u.onerror = () => { if (this.para === P) this.showParaBar(); };
+      speechSynthesis.speak(u); return this.showParaBar();
+    }
+    if (["highlight", "underline", "strike", "comment"].includes(a)) {
+      let contents = "";
+      if (a === "comment") { contents = await ui.prompt("Comentario", "Comentario sobre el párrafo:", "", "textarea"); if (contents == null) return; }
+      const type = a === "comment" ? "Highlight" : MARKUP[a];
+      const color = a === "highlight" || a === "comment" ? settings.data.hlColor : settings.data.color;
+      await d.withMu(a === "comment" ? "Comentario" : TOOL_NAMES[a], (doc) => { A.addMarkup(doc, i, type, P.quads, color, contents); });
+      return this.clearPara();
+    }
+    if (a === "redact") { await d.withMu("Marcar para censurar", (doc) => { A.addRedact(doc, i, P.quads); }); ui.toast("Marcado. Pulse Firmar › Aplicar censura para eliminarlo definitivamente", "info", 4000); return this.clearPara(); }
+    if (a === "search") { const q = P.text.length > 80 ? P.text.slice(0, 80).replace(/\s+\S*$/, "") : P.text; this.clearPara(); const bar = document.getElementById("searchbar"); bar.querySelector("input[type=search]").value = q; this.app.searchOpen = true; bar.classList.add("open"); return this.app.runSearch(); }
+    if (a === "share") { try { if (navigator.share) await navigator.share({ text: P.text }); else copyText(P.text); } catch {} return; }
+    if (a === "edit") {
+      if (P.parts.length > 1) return ui.toast("Seleccione un solo párrafo para editarlo");
+      const mdoc = await d.muDoc(); const part = P.parts[0];
+      const blk = A.blockAt(mdoc, i, (part.rect[0] + part.rect[2]) / 2, part.rect[1] + 1); if (!blk) return;
+      this.clearPara(); const p = this.viewer.pages[i];
+      const txt = await this.inlineEditor(p, blk.rect, blk.text, blk.size, blk.color, true, false);
+      if (txt == null || txt.trim() === blk.text) return;
+      await d.withMu("Editar párrafo", (doc, m) => { A.replaceBlock(m, doc, i, blk, txt); });
+    }
+  }
+
   showAnnBar() {
     document.querySelectorAll(".annbar,.annbar-h").forEach(n => n.remove());
     const s = this.sel, v = this.viewer; if (!s || !v) return; const p = v.pages[s.page];
@@ -368,6 +451,10 @@ export class Tools {
     if (!p?.overlay) return;
     p.overlay.querySelectorAll(".ov").forEach(n => n.remove());
     const add = (tag, attrs) => { const n = document.createElementNS(SVGNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); n.classList.add("ov"); p.overlay.appendChild(n); };
+    if (this.para && this.para.page === p.i) {
+      for (const q of this.para.quads) { const a = v.fzToLocal(p, q[0], q[1]), b = v.fzToLocal(p, q[6], q[7]); add("rect", { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), width: Math.abs(b[0] - a[0]), height: Math.abs(b[1] - a[1]), fill: "#2563eb", "fill-opacity": .22 }); }
+      const r = v.fzRectToLocal(p, this.para.rect); add("rect", { x: r[0] - 4, y: r[1] - 4, width: r[2] - r[0] + 8, height: r[3] - r[1] + 8, fill: "none", stroke: "#2563eb", "stroke-width": 1.5, rx: 4 });
+    }
     const srch = v.doc.search;
     if (srch?.hits?.length) {
       srch.hits.forEach((h, k) => {
