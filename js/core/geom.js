@@ -4,7 +4,7 @@
 // "pdf" = espacio de usuario PDF (origen abajo-izquierda, sin rotar).
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-function mul(a, b) { // aplica a y después b  (matrices [a b c d e f])
+export function mul(a, b) { // aplica a y después b  (matrices [a b c d e f])
   return [
     a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3],
     a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3],
@@ -12,7 +12,7 @@ function mul(a, b) { // aplica a y después b  (matrices [a b c d e f])
   ];
 }
 function tp(m, x, y) { return [x * m[0] + y * m[2] + m[4], x * m[1] + y * m[3] + m[5]]; }
-function inv(m) {
+export function inv(m) {
   const det = m[0] * m[3] - m[1] * m[2];
   const a = m[3] / det, b = -m[1] / det, c = -m[2] / det, d = m[0] / det;
   return [a, b, c, d, -m[4] * a - m[5] * c, -m[4] * b - m[5] * d];

@@ -6,8 +6,9 @@ import { typeEs, listComments, deleteBookmark } from "../cmd/review.js";
 import { sigReportHtml, validate } from "../cmd/protect.js";
 import * as A from "../cmd/annot.js";
 import * as O from "../cmd/organize.js";
+import * as PL from "../cmd/plans.js";
 
-const PANELS = [["thumbs", "layout-grid", "Miniaturas"], ["bookmarks", "bookmark", "Marcadores"], ["comments", "message-square", "Comentarios"], ["sigs", "signature", "Firmas"]];
+const PANELS = [["thumbs", "layout-grid", "Miniaturas"], ["bookmarks", "bookmark", "Marcadores"], ["comments", "message-square", "Comentarios"], ["sigs", "signature", "Firmas"], ["layers", "layers", "Capas"]];
 
 export class Sidebar {
   constructor(app) {
@@ -42,6 +43,7 @@ export class Sidebar {
       if (id === "thumbs") this.fillThumbs(d, c, act);
       else if (id === "bookmarks") await this.fillBookmarks(d, c, act);
       else if (id === "comments") await this.fillComments(d, c);
+      else if (id === "layers") await PL.fillLayers(this, d, c, act);
       else if (id === "sigs") { const r = this.sigRes.get(d.id); if (r) c.innerHTML = sigReportHtml(r); else { c.innerHTML = '<div class="empty">Comprobando…</div>'; const res = await validate(this.app, true); c.innerHTML = sigReportHtml(res || []); } }
     } catch (e) { console.error(e); c.innerHTML = `<div class="empty">Error: ${ui.esc(e.message)}</div>`; }
   }
@@ -110,17 +112,33 @@ export class Sidebar {
     c.appendChild(mk(out, []));
   }
 
-  // ---------- comentarios ----------
+  // ---------- comentarios (con respuestas y estado de revisión) ----------
   async fillComments(d, c) {
-    const list = await listComments(this.app);
-    if (!list.length) { c.innerHTML = '<div class="empty">Sin comentarios.</div>'; return; }
+    const all = await listComments(this.app);
+    if (!all.length) { c.innerHTML = '<div class="empty">Sin comentarios.</div>'; return; }
+    const list = A.threadAnnots(all);
+    const filt = this.cfilter || "";
+    const bar = document.createElement("div"); bar.className = "cfilt";
+    bar.innerHTML = `<select aria-label="Filtrar por estado"><option value="">Todos (${list.length})</option><option value="pend">Pendientes</option><option value="Accepted">Aceptados</option><option value="Rejected">Rechazados</option><option value="Completed">Completados</option><option value="Cancelled">Cancelados</option></select><button class="btn sm" data-a="rep">${icon("sheet")} Informe</button>`;
+    bar.querySelector("select").value = filt;
+    bar.querySelector("select").onchange = (e) => { this.cfilter = e.target.value; this.refresh(); };
+    bar.querySelector('[data-a="rep"]').onclick = () => this.app.cmd("summary");
+    c.appendChild(bar);
     let last = -1;
+    const fmtD = (x) => x ? new Date(x).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }) : "";
     for (const a of list) {
+      if (filt === "pend" ? (a.status && a.status !== "None") : filt && a.status !== filt) continue;
       if (a.page !== last) { const h = document.createElement("div"); h.className = "cpage"; h.textContent = "Página " + (a.page + 1); c.appendChild(h); last = a.page; }
       const e = document.createElement("div"); e.className = "cmt";
-      e.innerHTML = `<div class="ct"><b>${typeEs(a.type)}</b> <small>${ui.esc(a.author)} ${a.date ? new Date(a.date).toLocaleDateString("es-ES") : ""}</small><button class="mini" title="Eliminar">✕</button></div>${a.contents ? `<div class="cc">${ui.esc(a.contents)}</div>` : ""}`;
-      e.onclick = (ev) => { if (ev.target.classList.contains("mini")) return; d.viewer.goTo(a.page, a.bounds[1]); };
-      e.querySelector(".mini").onclick = () => d.withMu("Eliminar comentario", (doc) => A.deleteAnnot(doc, a.page, a.index));
+      const st = a.status ? `<span class="cst st-${a.status}">${A.stateEs(a.status)}</span>` : "";
+      e.innerHTML = `<div class="ct"><b>${typeEs(a.type)}</b>${st}<small>${ui.esc(a.author)} ${fmtD(a.date)}</small><button class="mini" data-a="del" title="Eliminar">✕</button></div>${a.contents ? `<div class="cc">${ui.esc(a.contents)}</div>` : ""}`
+        + a.replies.map(r => `<div class="crep"><small><b>${ui.esc(r.author || "—")}</b> ${fmtD(r.date)}</small><div>${ui.esc(r.contents)}</div></div>`).join("")
+        + (a.states.length ? `<div class="chist">${a.states.map(s => `${A.stateEs(s.state)} · ${ui.esc(s.author || "")} ${fmtD(s.date)}`).join("<br>")}</div>` : "")
+        + `<div class="cact"><button data-a="reply">${icon("reply")} Responder</button><select data-a="state"><option value="">Estado…</option><option value="Accepted">Aceptado</option><option value="Rejected">Rechazado</option><option value="Completed">Completado</option><option value="Cancelled">Cancelado</option><option value="None">Pendiente</option></select></div>`;
+      e.onclick = (ev) => { if (ev.target.closest("button,select")) return; d.viewer.goTo(a.page, a.bounds[1]); };
+      e.querySelector('[data-a="del"]').onclick = () => d.withMu("Eliminar comentario", (doc) => A.deleteThread(doc, a.page, a.index));
+      e.querySelector('[data-a="reply"]').onclick = async () => { const t = await ui.prompt("Responder", `Respuesta a «${(a.contents || typeEs(a.type)).slice(0, 60)}»:`, "", "textarea"); if (t) await d.withMu("Responder", (doc) => { A.addReply(doc, a.page, a.index, t); }); };
+      e.querySelector('[data-a="state"]').onchange = async (ev) => { const v = ev.target.value; if (v) await d.withMu("Estado: " + A.stateEs(v), (doc) => { A.addReply(doc, a.page, a.index, "", v); }); };
       c.appendChild(e);
     }
   }

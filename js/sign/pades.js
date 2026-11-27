@@ -3,9 +3,11 @@
 // Requiere globalThis.forge (node-forge) y el módulo mupdf.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { fzRectToPdf, pageCtm } from "../core/geom.js";
+import { TRUST_ES } from "./trust-es.js";
+import { addSignatureTimestamp, timestampOf, attrVal, nameOf } from "./ltv.js";
 
 const F = () => globalThis.forge;
-const PLACEHOLDER_BYTES = 16384;
+const PLACEHOLDER_BYTES = 20480;
 const BR_PLACEHOLDER = 9999999999;
 
 const OID = {
@@ -68,7 +70,7 @@ export function loadP12(arrayBuffer, password) {
   return { key, cert, chain, info: certInfo(cert) };
 }
 export function certInfo(cert) {
-  const g = (attrs, n) => (attrs.getField(n) || {}).value || "";
+  const g = (attrs, n) => attrVal(attrs.getField(n)) || "";
   return {
     cn: g(cert.subject, "CN"), o: g(cert.subject, "O"), serialName: g(cert.subject, { type: "2.5.4.5" }) || "",
     issuer: g(cert.issuer, "CN") || g(cert.issuer, "O"),
@@ -161,20 +163,31 @@ export function preparePdf(mupdf, bytes, opts) {
   let ap;
   {
     let content = "";
+    let imgRef = null, tx = 3, tw = w, imgCmd = "";
+    if (visible && opts.image) {
+      try {
+        imgRef = doc.addImage(new mupdf.Image(opts.image.png));
+        const iw = Math.min(w * 0.42, (h - 6) / (opts.image.aspect || 0.4)), ih = iw * (opts.image.aspect || 0.4);
+        imgCmd = `q ${iw.toFixed(2)} 0 0 ${ih.toFixed(2)} 4 ${((h - ih) / 2).toFixed(2)} cm /Img Do Q\n`;
+        tx = iw + 10; tw = w - tx;
+      } catch (e) { console.warn("imagen de firma", e); }
+    }
     if (visible) {
       const lines = opts.lines || [];
       const n = Math.max(lines.length, 1);
-      const fs = Math.max(4, Math.min(10, (h - 4) / (n * 1.25), ...lines.map(l => (w - 6) / Math.max(1, l.length * 0.5))));
+      const fs = Math.max(4, Math.min(10, (h - 4) / (n * 1.25), ...lines.map(l => (tw - 6) / Math.max(1, l.length * 0.5))));
       content += "q 1 1 1 rg 0 0 " + w.toFixed(2) + " " + h.toFixed(2) + " re f Q\n";
       content += "q 0.15 0.35 0.65 RG 0.8 w 0.5 0.5 " + (w - 1).toFixed(2) + " " + (h - 1).toFixed(2) + " re S Q\n";
+      content += imgCmd;
       content += "BT /Helv " + fs.toFixed(2) + " Tf 0.1 0.1 0.1 rg\n";
       let y = h - 2 - fs;
-      lines.forEach((l, i) => { content += `1 0 0 1 3 ${y.toFixed(2)} Tm (${winAnsi(l)}) Tj\n`; y -= fs * 1.25; });
+      lines.forEach((l, i) => { content += `1 0 0 1 ${tx.toFixed(2)} ${y.toFixed(2)} Tm (${winAnsi(l)}) Tj\n`; y -= fs * 1.25; });
       content += "ET\n";
     }
     const font = doc.addObject({ Type: "Font", Subtype: "Type1", BaseFont: "Helvetica", Encoding: "WinAnsiEncoding" });
     const mtx = { 0: [1, 0, 0, 1, 0, 0], 90: [0, 1, -1, 0, 0, 0], 180: [-1, 0, 0, -1, 0, 0], 270: [0, -1, 1, 0, 0, 0] }[rot] || [1, 0, 0, 1, 0, 0];
     ap = doc.addStream(content, { Type: "XObject", Subtype: "Form", BBox: [0, 0, Math.max(w, 0), Math.max(h, 0)], Matrix: mtx, Resources: { Font: { Helv: font } } });
+    if (imgRef) { const xo = doc.newDictionary(); xo.put("Img", imgRef); ap.get("Resources").put("XObject", xo); }
   }
 
   const zeros = new Uint8Array(PLACEHOLDER_BYTES);
@@ -302,12 +315,53 @@ export async function preparePdfForSigning(mupdf, bytes, opts) {
 
 export async function signWithP12(mupdf, bytes, p12, opts) {
   const prep = await preparePdfForSigning(mupdf, bytes, opts);
-  const cms = buildCms(prep.digest, p12.key, p12.cert, p12.chain);
+  let cms = buildCms(prep.digest, p12.key, p12.cert, p12.chain);
+  if (opts.timestamp) { const r = await addSignatureTimestamp(cms, opts.tsaUrl); cms = r.cms; opts.onTimestamp?.(r.ts); }
   return prep.embed(cms);
 }
 
+// ---------- cadena de confianza ----------
+let _trust = null;
+function trustStore() {
+  if (_trust) return _trust;
+  const forge = F(); _trust = { roots: [], pool: [] };
+  for (const t of TRUST_ES) { try { const c = forge.pki.certificateFromPem(t.pem); (t.root ? _trust.roots : _trust.pool).push(c); } catch {} }
+  return _trust;
+}
+const fp = (c) => { const F_ = F(); return F_.md.sha256.create().update(F_.asn1.toDer(F_.pki.certificateToAsn1(c)).getBytes()).digest().toHex(); };
+/** Construye y verifica la cadena hasta una raíz de confianza. extraRoots: certificados adicionales (pruebas / CA propias). */
+export function verifyChain(signer, certsInCms = [], when = new Date(), extraRoots = []) {
+  const ts = trustStore(); const roots = [...ts.roots, ...extraRoots]; const rootFps = new Set(roots.map(fp));
+  const pool = [...certsInCms, ...ts.pool, ...roots];
+  const chain = [signer]; let cur = signer; const res = { trusted: false, chain: [], root: "", reason: "" };
+  const cn = (c) => nameOf(c.subject);
+  for (let depth = 0; depth < 8; depth++) {
+    if (when < cur.validity.notBefore || when > cur.validity.notAfter) { res.reason = `«${cn(cur)}» no era válido en la fecha de firma`; break; }
+    if (rootFps.has(fp(cur))) { res.trusted = true; res.root = cn(cur); break; }
+    const iss = pool.find(c => c !== cur && c.subject.hash === cur.issuer.hash && (() => { try { return c.verify(cur); } catch { return false; } })());
+    if (!iss) { res.reason = cur.subject.hash === cur.issuer.hash ? "certificado autofirmado no reconocido" : `emisor «${nameOf(cur.issuer)}» no reconocido`; break; }
+    chain.push(iss); cur = iss;
+  }
+  res.chain = chain.map(cn); res.certs = chain;
+  return res;
+}
+
 // ---------- validación ----------
-export async function verifySignatures(mupdf, bytes) {
+/** ¿Las revisiones posteriores a la firma solo añaden información de validación (/DSS)? (permitido por PAdES) */
+function onlyDssAfter(bytes, end) {
+  const seg = latin(bytes.subarray(end));
+  const objs = seg.match(/\d+\s+\d+\s+obj\b[\s\S]*?endobj/g) || [];
+  if (!objs.length) return /^\s*(xref|startxref|trailer|%%EOF|\s)*/.test(seg) && !/\bobj\b/.test(seg);
+  return objs.every(o => {
+    const dict = o.replace(/^\d+\s+\d+\s+obj\s*/, "").split(/\bstream\r?\n/)[0];
+    if (/\/Type\s*\/Catalog/.test(dict)) return /\/DSS\b/.test(dict);
+    if (/\/Type\s*\/XRef/.test(dict)) return true;
+    if (/^\s*<<\s*(\/(Certs|OCSPs|CRLs|VRI)\s*\[[^\]]*\]\s*)+>>\s*$/.test(dict.replace(/endobj[\s\S]*$/, ""))) return true;
+    if (/\bstream\r?\n/.test(o)) return !/\/(Type|Subtype|Filter\s*\/DCT|Resources)\b/.test(dict) || /^\s*<<\s*(\/(Length|Filter)\s*[^/>]+)*>>\s*$/.test(dict);
+    return false;
+  });
+}
+export async function verifySignatures(mupdf, bytes, extraRoots = []) {
   const forge = F(); const A = forge.asn1;
   const doc = mupdf.Document.openDocument(bytes, "application/pdf").asPDF();
   if (!doc || doc.needsPassword()) return [];
@@ -335,6 +389,7 @@ export async function verifySignatures(mupdf, bytes) {
       const g = (k) => { const o = v.get(k); return o && !o.isNull() ? o.asString() : ""; };
       r.reason = g("Reason"); r.location = g("Location"); r.date = g("M"); r.signerName = g("Name");
       r.coversWholeFile = br[2] + br[3] === bytes.length;
+      if (!r.coversWholeFile && onlyDssAfter(bytes, br[2] + br[3])) { r.coversWholeFile = true; r.dssAfter = true; }
       const data = new Uint8Array(br[1] + br[3]);
       data.set(bytes.subarray(br[0], br[0] + br[1]), 0); data.set(bytes.subarray(br[2], br[2] + br[3]), br[1]);
       let contents = v.get("Contents").asByteString();
@@ -354,6 +409,7 @@ export async function verifySignatures(mupdf, bytes) {
       if (si[p].tagClass === A.Class.CONTEXT_SPECIFIC && si[p].type === 0) { signedAttrs = si[p]; p++; }
       const sigAlg = A.derToOid(si[p].value[0].value); p++;
       const sigBytes = si[p].value;
+      try { r.timestamp = timestampOf(si, sigBytes); } catch (e) { r.timestamp = { ok: false, error: e.message }; }
       // localizar certificado firmante
       let signer = certs[0];
       if (sid.type === A.Type.SEQUENCE) {
@@ -384,6 +440,10 @@ export async function verifySignatures(mupdf, bytes) {
       r.ok = r.integrity && sigOk;
       const now = new Date();
       r.certValidNow = now >= signer.validity.notBefore && now <= signer.validity.notAfter;
+      const sigDate = (() => { const m_ = /D:(\d{4})(\d\d)(\d\d)(\d\d)?(\d\d)?(\d\d)?/.exec(r.date || ""); return m_ ? new Date(Date.UTC(+m_[1], +m_[2] - 1, +m_[3], +(m_[4] || 0), +(m_[5] || 0), +(m_[6] || 0))) : (r.signingTime || now); })();
+      const when = r.timestamp?.ok && r.timestamp.genTime ? r.timestamp.genTime : sigDate;
+      r.certsInCms = certs; r.signerCert = signer; r.sigBytes = sigBytes;
+      try { r.trust = verifyChain(signer, certs, when, extraRoots); } catch (e) { r.trust = { trusted: false, chain: [], reason: e.message }; }
     } catch (e) { r.errors.push(e.message || String(e)); }
     out.push(r);
   }

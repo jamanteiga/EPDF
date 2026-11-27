@@ -1,6 +1,8 @@
 // ePDF — visor de páginas (PDF.js) con capas de texto, formularios y superposición de herramientas
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { pdfjsLib, clamp } from "./engine.js";
+import { ocConfig } from "../cmd/plans.js";
+import * as FRT from "./formrt.js";
 
 const { AnnotationMode, TextLayer, AnnotationLayer } = pdfjsLib;
 const applyT = (p, m) => [p[0] * m[0] + p[1] * m[2] + m[4], p[0] * m[1] + p[1] * m[3] + m[5]];
@@ -167,6 +169,7 @@ export class Viewer {
     p.task = p.page.render({
       canvasContext: ctx, canvas, viewport: v, transform: os !== 1 ? [os, 0, 0, os, 0, 0] : null,
       annotationMode: AnnotationMode.ENABLE_FORMS, annotationStorage: this.doc.pdf.annotationStorage,
+      ...(this.doc.ocState?.size ? { optionalContentConfigPromise: ocConfig(this.doc) } : {}),
     });
     try { await p.task.promise; } catch (e) { if (e?.name !== "RenderingCancelledException") console.warn(e); return; }
     if (scale !== this.scale) return;
@@ -186,6 +189,7 @@ export class Viewer {
       if (annotations.length) {
         const al = new AnnotationLayer({ div: ad, accessibilityManager: null, annotationCanvasMap: null, annotationEditorUIManager: null, page: p.page, viewport: v.clone({ dontFlip: true }), structTreeLayer: null, commentManager: null, linkService: this.linkService, annotationStorage: this.doc.pdf.annotationStorage });
         await al.render({ annotations, viewport: v.clone({ dontFlip: true }), imageResourcesPath: new URL("../../vendor/pdfjs/images/", import.meta.url).href, renderForms: true, linkService: this.linkService, downloadManager: null, annotationStorage: this.doc.pdf.annotationStorage, enableScripting: false, hasJSActions: false, fieldObjects: null });
+        FRT.attach(this.app, this.doc, ad).catch(e => console.warn("formrt", e));
       }
     } catch (e) { console.warn("annotationLayer", e); }
     p.div.appendChild(p.overlay);

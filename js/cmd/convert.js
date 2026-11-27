@@ -1,6 +1,6 @@
 // ePDF — pestaña Convertir: OCR, exportar, escanear, optimizar
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { mu, pickFiles, download, zip, baseName, parsePageRanges, settings, fmtBytes } from "../core/engine.js";
+import { mu, muJob, pickFiles, download, zip, baseName, parsePageRanges, settings, fmtBytes } from "../core/engine.js";
 import { pageCtm } from "../core/geom.js";
 import { appendContent } from "./annot.js";
 import { imagesToPages } from "./organize.js";
@@ -119,19 +119,36 @@ export async function exportImages(app) {
 
 export async function exportText(app) {
   const d = app.active; if (!d) return;
-  const doc = await d.muDoc(); let out = "";
-  for (let i = 0; i < doc.countPages(); i++) out += `\n===== Página ${i + 1} =====\n` + doc.loadPage(i).toStructuredText().asText();
-  download("﻿" + out.trim() + "\n", baseName(d.name) + ".txt", "text/plain;charset=utf-8");
+  const pages = await ui.run("Extrayendo texto…", async () => muJob("text", [(await d.currentBytes()).slice()]));
+  if (!pages) return;
+  download("\ufeff" + pages.map((t, i) => `===== Página ${i + 1} =====\n` + t).join("\n").trim() + "\n", baseName(d.name) + ".txt", "text/plain;charset=utf-8");
 }
 
 export async function optimized(app) {
   const d = app.active; if (!d) return;
-  const before = (await d.currentBytes()).length;
-  const m = await mu();
-  const out = await ui.run("Optimizando…", async () => m.Document.openDocument(d.bytes, "application/pdf").asPDF().saveToBuffer("garbage=deduplicate,compress,compress-images,compress-fonts,clean,sanitize").asUint8Array().slice());
-  if (!out) return;
-  download(out, baseName(d.name) + "_optimizado.pdf");
-  ui.toast(`Copia optimizada: ${fmtBytes(before)} → ${fmtBytes(out.length)}`, "ok", 5000);
+  const r = await ui.form("Reducir tamaño", [
+    { name: "level", label: "Calidad de las imágenes", type: "select", value: "media", options: [["alta", "Alta · 200 ppp (impresión)"], ["media", "Media · 150 ppp (recomendada)"], ["baja", "Baja · 100 ppp (correo, sede electrónica)"], ["minima", "Mínima · 72 ppp (solo pantalla)"], ["none", "No tocar las imágenes"]] },
+    { name: "gray", label: "Convertir las imágenes a escala de grises", type: "checkbox", value: false, show: v => v.level !== "none" },
+    { name: "html", type: "html", html: "<h4>Optimización avanzada</h4>" },
+    { name: "subset", label: "Reducir las fuentes a los caracteres usados (subconjunto)", type: "checkbox", value: true, help: "Ahorro grande en documentos con fuentes completas incrustadas. Los campos de formulario pueden perder caracteres no usados." },
+    { name: "thumbs", label: "Eliminar miniaturas incrustadas", type: "checkbox", value: true },
+    { name: "piece", label: "Eliminar datos privados de aplicaciones (Illustrator, AutoCAD…)", type: "checkbox", value: true },
+    { name: "js", label: "Eliminar JavaScript y acciones automáticas", type: "checkbox", value: false },
+    { name: "files", label: "Eliminar archivos adjuntos", type: "checkbox", value: false },
+    { name: "meta", label: "Eliminar metadatos (autor, título, XMP)", type: "checkbox", value: false, help: "Un PDF/A dejaría de serlo." },
+    { name: "xfa", label: "Eliminar formulario XFA (se conserva el AcroForm)", type: "checkbox", value: false },
+    { name: "dest", label: "Resultado", type: "select", value: "apply", options: [["apply", "Aplicar al documento abierto"], ["copy", "Descargar una copia"]] },
+  ], { okText: "Reducir", intro: "<small>Baja la resolución de las imágenes, las recomprime en JPEG, elimina objetos duplicados y comprime fuentes y datos. Se ejecuta en segundo plano.</small>" });
+  if (!r) return;
+  const P = { alta: [200, 85], media: [150, 75], baja: [100, 60], minima: [72, 50], none: [0, 0] }[r.level];
+  const before = await d.currentBytes();
+  const strip = { thumbs: r.thumbs, piece: r.piece, js: r.js, files: r.files, meta: r.meta, xfa: r.xfa };
+  const res = await ui.run("Reduciendo tamaño…", (b) => muJob("optimize", [before.slice(), { dpi: P[0], quality: P[1], gray: r.gray, images: r.level !== "none", subset: r.subset, strip }], (p) => b.set(`Procesando imágenes… ${Math.round(p * 100)} %`, p)));
+  if (!res) return;
+  if (res.bytes.length >= before.length) return ui.alert("Reducir tamaño", `No se ha podido reducir más: el documento ya está optimizado (${fmtBytes(before.length)}).`);
+  const msg = `${fmtBytes(before.length)} → <b>${fmtBytes(res.bytes.length)}</b> (−${Math.round((1 - res.bytes.length / before.length) * 100)} %) · ${res.changed} imagen(es) recomprimida(s)${res.subsetDone ? " · fuentes reducidas a los caracteres usados" : ""}${res.extra?.length ? " · eliminado: " + res.extra.join(", ") : ""}`;
+  if (r.dest === "copy") { download(res.bytes, baseName(d.name) + "_reducido.pdf"); return ui.toast("Copia reducida: " + msg.replace(/<\/?b>/g, ""), "ok", 6000); }
+  if (await d.modify("Reducir tamaño", async () => res.bytes, { silent: true })) ui.alert("Reducir tamaño", msg + "<br><br>Guarde el documento para conservar el resultado.");
 }
 
 // ================= CREAR =================

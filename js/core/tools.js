@@ -2,14 +2,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { settings, hexToRgb01, rgb01ToHex } from "./engine.js";
 import * as A from "../cmd/annot.js";
+import * as MS from "../cmd/measure.js";
+import * as PL from "../cmd/plans.js";
 import * as ui from "../ui/dialogs.js";
+import { icon } from "../ui/icons.js";
+async function copyText(t) { try { await navigator.clipboard.writeText(t); ui.toast("Texto copiado", "ok", 1800); } catch { ui.alert("Copiar", `<textarea style="width:100%;height:220px">${ui.esc(t)}</textarea><p class="sm">Selecciónelo y cópielo.</p>`); } }
 
 const SVGNS = "http://www.w3.org/2000/svg";
-const DRAG = new Set(["highlight", "underline", "strikeout", "squiggly", "rect", "ellipse", "line", "arrow", "distance", "textbox", "redact", "crop", "snapshot", "sigrect", "image", "field", "annsel"]);
-const TAP = new Set(["note", "typewriter", "addtext", "edittext", "eraser"]);
-const ONESHOT = new Set(["sigrect", "crop", "snapshot", "image"]);
+const DRAG = new Set(["ocrzone", "highlight", "underline", "strikeout", "squiggly", "rect", "ellipse", "line", "arrow", "distance", "textbox", "redact", "crop", "snapshot", "sigrect", "image", "field", "annsel", "calib", "editimg"]);
+const TAP = new Set(["count", "note", "typewriter", "addtext", "edittext", "eraser", "editpara", "perimeter", "area", "angle"]);
+const POLY = new Set(["perimeter", "area", "angle"]);
+const ONESHOT = new Set(["ocrzone", "sigrect", "crop", "snapshot", "image"]);
 const MARKUP = { highlight: "Highlight", underline: "Underline", strikeout: "StrikeOut", squiggly: "Squiggly" };
 export const TOOL_NAMES = {
+  para: "Seleccionar párrafo", ocrzone: "Zona a tabla", count: "Contar símbolos", calib: "Calibrar escala", perimeter: "Perímetro", area: "Área", angle: "Ángulo", editpara: "Editar párrafo", editimg: "Editar imágenes",
   hand: "Mano", select: "Selección de texto", annsel: "Seleccionar comentarios", highlight: "Resaltar", underline: "Subrayar", strikeout: "Tachar", squiggly: "Ondulado",
   rect: "Rectángulo", ellipse: "Elipse", line: "Línea", arrow: "Flecha", distance: "Distancia", ink: "Lápiz", note: "Nota", typewriter: "Máquina de escribir",
   textbox: "Cuadro de texto", addtext: "Añadir texto", edittext: "Editar texto", eraser: "Borrador", redact: "Marcar para censurar", crop: "Recortar",
@@ -21,11 +27,15 @@ export class Tools {
     this.app = app; this.tool = "hand"; this.opts = {}; this.sel = null; this.st = null;
     const host = document.getElementById("viewers");
     host.addEventListener("pointerdown", (e) => this.down(e));
+    host.addEventListener("contextmenu", (e) => { if (e.ctrlKey && !e.target.closest("input,textarea")) e.preventDefault(); }); // macOS: Ctrl+clic = menú contextual
     host.addEventListener("pointermove", (e) => this.move(e));
     host.addEventListener("pointerup", (e) => this.up(e));
     host.addEventListener("pointercancel", () => this.cancel());
     document.addEventListener("keydown", (e) => {
       if ((e.key === "Delete" || e.key === "Backspace") && this.sel && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)) { e.preventDefault(); this.deleteSelected(); }
+      if (e.key === "Enter" && this.poly && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)) { e.preventDefault(); this.polyFinish(); }
+      if (e.key === "Escape" && this.poly) { this.polyCancel(); return; }
+      if (e.key === "Escape" && this.para && !document.querySelector(".modal-bg")) { speechSynthesis?.cancel?.(); this.clearPara(); return; }
       if (e.key === "Escape" && !document.querySelector(".modal-bg")) { this.clearSel(); if (this.tool !== "hand" && this.tool !== "select") this.set("hand"); }
     });
   }
@@ -34,6 +44,10 @@ export class Tools {
 
   set(tool, opts = {}) {
     this.prev = ONESHOT.has(this.tool) ? this.prev : this.tool;
+    if (this.poly) this.polyCancel();
+    if (POLY.has(tool) && !opts.hint) opts = { ...opts, hint: tool === "angle" ? "toque tres puntos: extremo, vértice y extremo" : "toque los vértices · doble toque o Intro para terminar" };
+    if (tool === "editimg" && !opts.hint) opts = { ...opts, hint: "toque una imagen del documento para moverla, escalarla o eliminarla" };
+    if (tool === "editpara" && !opts.hint) opts = { ...opts, hint: "toque un párrafo para reescribirlo (se reajustan las líneas)" };
     this.tool = tool; this.opts = opts; this.clearSel();
     const host = document.getElementById("viewers");
     host.className = "tool-" + tool + (DRAG.has(tool) || TAP.has(tool) || tool === "ink" ? " drawing" : "");
@@ -46,8 +60,23 @@ export class Tools {
   // ---------------- eventos ----------------
   down(e) {
     const v = this.viewer; if (!v || e.button > 0) return;
-    if (e.target.closest(".inline-ed,.annbar")) return;
+    if (e.pointerType === "touch") { this.touches = this.touches || new Set(); this.touches.add(e.pointerId); if (this.touches.size > 1) { this.pan = null; if (this.st) this.cancel(); return; } }
+    if (e.target.closest(".inline-ed,.annbar,.parabar")) return;
+    if (e.pointerType === "mouse" && (e.ctrlKey || e.metaKey) && !e.altKey) { e.preventDefault(); e.stopPropagation(); this.pickParagraph(e.clientX, e.clientY, e.shiftKey); return; }
+    if (this.para && !e.target.closest(".parabar")) this.clearPara();
+    if (this.tool === "para") { e.preventDefault(); this.pickParagraph(e.clientX, e.clientY, false); return; }
+    const hd = e.target.closest(".hdl");
+    if (hd && this.sel) { e.preventDefault(); e.stopPropagation(); try { hd.setPointerCapture(e.pointerId); } catch {} this.rs = { id: e.pointerId, corner: hd.dataset.c, ob: [...this.sel.bounds], nb: [...this.sel.bounds] }; return; }
     const t = this.tool;
+    const drawing = t !== "hand" && t !== "select";
+    if (e.pointerType === "pen" && settings.data.penOnly == null) {
+      settings.data.penOnly = true; settings.save(); this.app.ribbon?.show(this.app.ribbon.current);
+      ui.toast("Apple Pencil detectado: el lápiz dibuja y el dedo desplaza (se puede cambiar en Anotar › Solo lápiz)", "info", 6000);
+    }
+    if (drawing && e.pointerType === "touch" && settings.data.penOnly) {
+      this.pan = { x: e.clientX, y: e.clientY, sl: v.root.scrollLeft, st: v.root.scrollTop }; try { v.root.setPointerCapture(e.pointerId); } catch {}
+      return;
+    }
     if (t === "hand") {
       if (e.pointerType === "mouse" && !e.target.closest(".annotationLayer :is(input,textarea,select,button,a)")) {
         this.pan = { x: e.clientX, y: e.clientY, sl: v.root.scrollLeft, st: v.root.scrollTop }; v.root.setPointerCapture?.(e.pointerId);
@@ -60,10 +89,16 @@ export class Tools {
     try { e.target.setPointerCapture?.(e.pointerId); } catch {}
     const pt = v.clientToFz(p, e.clientX, e.clientY);
     this.st = { p, start: pt, last: pt, pts: [pt], id: e.pointerId, moved: false, client: [e.clientX, e.clientY] };
-    if (t === "annsel") this.beginAnnSel(p, pt);
+    if (t === "annsel" || t === "editimg") this.beginAnnSel(p, pt);
   }
   move(e) {
     const v = this.viewer;
+    if (this.rs && e.pointerId === this.rs.id) {
+      const s = this.sel; const p = v.pages[s.page]; const pt = v.clientToFz(p, e.clientX, e.clientY); const r = this.rs, nb = [...r.ob];
+      if (r.corner.includes("w")) nb[0] = Math.min(pt[0], nb[2] - 4); if (r.corner.includes("e")) nb[2] = Math.max(pt[0], nb[0] + 4);
+      if (r.corner.includes("n")) nb[1] = Math.min(pt[1], nb[3] - 4); if (r.corner.includes("s")) nb[3] = Math.max(pt[1], nb[1] + 4);
+      r.nb = nb; this.redrawOverlay(v, p); return;
+    }
     if (this.pan && v) { v.root.scrollLeft = this.pan.sl - (e.clientX - this.pan.x); v.root.scrollTop = this.pan.st - (e.clientY - this.pan.y); return; }
     const s = this.st; if (!s || e.pointerId !== s.id) return;
     e.preventDefault();
@@ -73,12 +108,21 @@ export class Tools {
     this.preview();
   }
   async up(e) {
+    this.touches?.delete(e.pointerId);
+    if (this.rs && e.pointerId === this.rs.id) {
+      const r = this.rs, s = this.sel; this.rs = null;
+      if (s && Math.hypot(r.nb[0] - r.ob[0], r.nb[1] - r.ob[1], r.nb[2] - r.ob[2], r.nb[3] - r.ob[3]) > 1) {
+        if (s.kind === "img") { await this.doc.withMu("Escalar imagen", (doc) => { A.placeImage(doc, s.page, s.index, r.nb); }, { silent: true }); await this.refindImage(r.nb); }
+        else { await this.doc.withMu("Redimensionar", (doc) => { A.scaleAnnot(doc, s.page, s.index, r.ob, r.nb); }, { silent: true }); s.bounds = r.nb; }
+      }
+      this.showAnnBar(); return;
+    }
     if (this.pan) { this.pan = null; return; }
     const s = this.st; if (!s || e.pointerId !== s.id) return;
     this.st = null; this.clearPreview(s.p);
     try { await this.finish(s); } catch (err) { console.error(err); ui.alert("Error", ui.esc(err.message || err)); }
   }
-  cancel() { if (this.st) this.clearPreview(this.st.p); this.st = null; this.pan = null; }
+  cancel() { if (this.st) this.clearPreview(this.st.p); this.st = null; this.pan = null; this.rs = null; }
 
   rectOf(s, minSize = 0) {
     let r = [Math.min(s.start[0], s.last[0]), Math.min(s.start[1], s.last[1]), Math.max(s.start[0], s.last[0]), Math.max(s.start[1], s.last[1])];
@@ -105,13 +149,13 @@ export class Tools {
       this.svg(p, "path", { d, stroke: color, "stroke-width": (this.opts.width || 2) * v.scale, fill: "none", "stroke-linecap": "round", "stroke-linejoin": "round" });
       return;
     }
-    if (t === "line" || t === "arrow" || t === "distance") {
+    if (t === "line" || t === "arrow" || t === "distance" || t === "calib") {
       const a = v.fzToLocal(p, ...s.start), b = v.fzToLocal(p, ...s.last);
       this.svg(p, "line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], stroke: color, "stroke-width": 2 * v.scale });
       if (t === "distance") { const tx = this.svg(p, "text", { x: (a[0] + b[0]) / 2 + 6, y: (a[1] + b[1]) / 2 - 6, fill: color, "font-size": 13 }); tx.textContent = this.fmtDist(s.start, s.last); }
       return;
     }
-    if (t === "annsel" && this.drag) { this.drag.dx = s.last[0] - s.start[0]; this.drag.dy = s.last[1] - s.start[1]; this.redrawOverlay(v, p); return; }
+    if ((t === "annsel" || t === "editimg") && this.drag) { this.drag.dx = s.last[0] - s.start[0]; this.drag.dy = s.last[1] - s.start[1]; this.redrawOverlay(v, p); return; }
     const r = this.rectOf(s); if (!r) return;
     const l = v.fzRectToLocal(p, r);
     const isEll = t === "ellipse";
@@ -119,10 +163,32 @@ export class Tools {
     if (isEll) this.svg(p, "ellipse", { cx: (l[0] + l[2]) / 2, cy: (l[1] + l[3]) / 2, rx: (l[2] - l[0]) / 2, ry: (l[3] - l[1]) / 2, ...style });
     else this.svg(p, "rect", { x: l[0], y: l[1], width: l[2] - l[0], height: l[3] - l[1], ...style });
   }
-  fmtDist(a, b) {
-    const pts = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const mm = pts * 25.4 / 72 * (settings.data.measureScale || 1);
-    return mm >= 1000 ? (mm / 1000).toFixed(3) + " m" : mm.toFixed(1) + " mm";
+  fmtDist(a, b) { return MS.fmtLen(this.doc, Math.hypot(b[0] - a[0], b[1] - a[1])); }
+
+  // ---------------- medición por vértices ----------------
+  polyPoint(p, pt) {
+    const v = this.viewer, now = Date.now(), t = this.tool;
+    if (this.poly && this.poly.page !== p.i) this.polyCancel();
+    if (!this.poly) this.poly = { page: p.i, pts: [], t: 0 };
+    const Q = this.poly, last = Q.pts.at(-1), tol = 10 / v.scale;
+    if (last && now - Q.t < 450 && Math.hypot(pt[0] - last[0], pt[1] - last[1]) < tol) return this.polyFinish();
+    if (t === "area" && Q.pts.length >= 3 && Math.hypot(pt[0] - Q.pts[0][0], pt[1] - Q.pts[0][1]) < tol) return this.polyFinish();
+    Q.pts.push(pt); Q.t = now;
+    if (t === "angle" && Q.pts.length === 3) return this.polyFinish();
+    this.drawPoly();
+  }
+  drawPoly() {
+    const Q = this.poly; if (!Q) return; const v = this.viewer, p = v.pages[Q.page]; this.clearPreview(p);
+    const color = settings.data.color; const L = Q.pts.map(q => v.fzToLocal(p, q[0], q[1]));
+    if (L.length > 1) this.svg(p, "polyline", { points: L.map(q => q.join(",")).join(" ") + (this.tool === "area" && L.length > 2 ? " " + L[0].join(",") : ""), fill: this.tool === "area" ? color : "none", "fill-opacity": .15, stroke: color, "stroke-width": 2 });
+    for (const q of L) this.svg(p, "circle", { cx: q[0], cy: q[1], r: 5, fill: "#fff", stroke: color, "stroke-width": 2 });
+  }
+  polyCancel() { const Q = this.poly; this.poly = null; if (Q && this.viewer) this.clearPreview(this.viewer.pages[Q.page]); }
+  async polyFinish() {
+    const Q = this.poly, t = this.tool; if (!Q) return; this.polyCancel();
+    const min = t === "area" ? 3 : t === "angle" ? 3 : 2;
+    if (Q.pts.length < min) return ui.toast(`Se necesitan al menos ${min} puntos`);
+    await this.doc.withMu(TOOL_NAMES[t], (doc) => MS.addPolyMeasure(this.app, doc, Q.page, t, Q.pts), { silent: true });
   }
 
   // ---------------- acciones ----------------
@@ -139,7 +205,21 @@ export class Tools {
     switch (t) {
       case "ink": if (s.pts.length > 1) await d.withMu("Lápiz", (doc) => { A.addInk(doc, i, [s.pts], color, this.opts.width || 2); }, { silent: true }); return;
       case "rect": case "ellipse": { const r = this.rectOf(s, 3); if (r) await d.withMu(TOOL_NAMES[t], (doc) => { A.addShape(doc, i, t === "rect" ? "Square" : "Circle", r, color, this.opts.width || 2); }, { silent: true }); return; }
-      case "line": case "arrow": case "distance": if (s.moved) await d.withMu(TOOL_NAMES[t], (doc) => { A.addLine(doc, i, s.start, s.last, color, this.opts.width || (t === "distance" ? 1 : 2), t !== "line", t === "distance" ? this.fmtDist(s.start, s.last) : ""); }, { silent: true }); return;
+      case "distance": if (s.moved) await d.withMu("Distancia", (doc) => MS.addDistance(this.app, doc, i, s.start, s.last), { silent: true }); return;
+      case "calib": if (s.moved) { await MS.finishCalibration(this.app, p, s.start, s.last); this.set("distance"); } return;
+      case "perimeter": case "area": case "angle": return this.polyPoint(p, s.start);
+      case "ocrzone": { const r = this.rectOf(s, 6); if (r) { const Z = await import("../cmd/zone.js"); await Z.extract(this.app, i, r); } return; }
+      case "count": await d.withMu("Contar", (doc) => PL.addCountMark(doc, i, s.start), { silent: true }); return PL.countToast(this.app);
+      case "editpara": {
+        const mdoc = await d.muDoc();
+        const blk = A.blockAt(mdoc, i, s.start[0], s.start[1]);
+        if (!blk) return ui.toast("Toque sobre un párrafo de texto");
+        const txt = await this.inlineEditor(p, blk.rect, blk.text, blk.size, blk.color, true, false);
+        if (txt == null || txt.trim() === blk.text) return;
+        await d.withMu("Editar párrafo", (doc, m) => { A.replaceBlock(m, doc, i, blk, txt); });
+        return;
+      }
+      case "line": case "arrow": if (s.moved) await d.withMu(TOOL_NAMES[t], (doc) => { A.addLine(doc, i, s.start, s.last, color, this.opts.width || (t === "distance" ? 1 : 2), t !== "line", t === "distance" ? this.fmtDist(s.start, s.last) : ""); }, { silent: true }); return;
       case "note": { const txt = await ui.prompt("Nota", "Texto de la nota:", "", "textarea"); if (txt) await d.withMu("Nota", (doc) => { A.addNote(doc, i, s.start, txt); }); return; }
       case "typewriter": case "addtext": {
         const size = this.opts.size || settings.data.fontSize;
@@ -176,7 +256,7 @@ export class Tools {
         return;
       }
       case "redact": { const r = this.rectOf(s, 2); if (r) await d.withMu("Marcar para censurar", (doc) => { A.addRedact(doc, i, r); }, { silent: true }); return; }
-      case "annsel": return this.endAnnSel(s);
+      case "annsel": case "editimg": return this.endAnnSel(s);
       case "image": {
         const o = this.opts; let r = this.rectOf(s, 8);
         if (!r) { const w = o.w || 150, h = w * (o.aspect || 1); r = [s.start[0] - w / 2, s.start[1] - h / 2, s.start[0] + w / 2, s.start[1] + h / 2]; }
@@ -220,7 +300,7 @@ export class Tools {
   // ---------------- selección / movimiento de comentarios ----------------
   async beginAnnSel(p, pt) {
     const mdoc = await this.doc.muDoc();
-    const hit = A.annotAt(mdoc, p.i, pt[0], pt[1]);
+    const hit = this.tool === "editimg" ? A.imageAt(mdoc, p.i, pt[0], pt[1]) : A.annotAt(mdoc, p.i, pt[0], pt[1]);
     if (this.st) this.st.hit = hit;
     if (hit) { this.sel = { docId: this.doc.id, page: p.i, ...hit }; this.drag = { dx: 0, dy: 0 }; }
     else { this.clearSel(); }
@@ -231,23 +311,123 @@ export class Tools {
     if (!this.sel) return;
     if (s.moved && drag && (Math.abs(drag.dx) > 1 || Math.abs(drag.dy) > 1)) {
       const { page, index } = this.sel;
-      await this.doc.withMu("Mover comentario", (doc) => { A.moveAnnot(doc, page, index, drag.dx, drag.dy); }, { silent: true });
-      this.sel.bounds = [this.sel.bounds[0] + drag.dx, this.sel.bounds[1] + drag.dy, this.sel.bounds[2] + drag.dx, this.sel.bounds[3] + drag.dy];
+      const nb = [this.sel.bounds[0] + drag.dx, this.sel.bounds[1] + drag.dy, this.sel.bounds[2] + drag.dx, this.sel.bounds[3] + drag.dy];
+      if (this.sel.kind === "img") { await this.doc.withMu("Mover imagen", (doc) => { A.placeImage(doc, page, index, nb); }, { silent: true }); await this.refindImage(nb); }
+      else { await this.doc.withMu("Mover comentario", (doc) => { A.moveAnnot(doc, page, index, drag.dx, drag.dy); }, { silent: true }); this.sel.bounds = nb; }
     }
     this.showAnnBar();
   }
-  clearSel() { const had = this.sel; this.sel = null; this.drag = null; document.querySelectorAll(".annbar").forEach(n => n.remove()); if (had && this.viewer) { const p = this.viewer.pages[had.page]; if (p) this.redrawOverlay(this.viewer, p); } }
+  clearSel() { const had = this.sel; this.sel = null; this.drag = null; document.querySelectorAll(".annbar,.annbar-h").forEach(n => n.remove()); if (had && this.viewer) { const p = this.viewer.pages[had.page]; if (p) this.redrawOverlay(this.viewer, p); } }
+  async refindImage(nb) {
+    const s = this.sel; if (!s) return; const doc = await this.doc.muDoc();
+    const hit = A.imageAt(doc, s.page, (nb[0] + nb[2]) / 2, (nb[1] + nb[3]) / 2);
+    if (hit) Object.assign(s, hit); else this.clearSel();
+  }
   async deleteSelected() {
     const s = this.sel; if (!s) return; this.clearSel();
+    if (s.kind === "img") return this.doc.withMu("Eliminar imagen", (doc) => { A.removeImage(doc, s.page, s.index); });
     await this.doc.withMu("Eliminar comentario", (doc) => { A.deleteAnnot(doc, s.page, s.index); });
   }
+  // ---------------- selección de párrafo (Ctrl/⌘ + clic, o herramienta Párrafo) ----------------
+  async pickParagraph(cx, cy, add = false) {
+    const v = this.viewer; const p = v?.pageAt(cx, cy); if (!p) return;
+    const pt = v.clientToFz(p, cx, cy);
+    const para = A.paragraphAt(await this.doc.muDoc(), p.i, pt[0], pt[1]);
+    if (!para || !para.text) { if (!add) this.clearPara(); return ui.toast("No hay texto en ese punto" + (this.doc.hasText === false ? " (documento escaneado: aplique OCR)" : ""), "info", 2500); }
+    if (add && this.para && this.para.page === para.page) {
+      if (this.para.parts.some(x => x.rect.join() === para.rect.join())) return;
+      this.para.parts.push(para); this.para.parts.sort((a, b) => a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
+    } else { this.clearPara(); this.para = { page: p.i, parts: [para] }; }
+    const P = this.para; P.text = P.parts.map(x => x.text).join("\n\n"); P.quads = P.parts.flatMap(x => x.quads);
+    P.rect = [Math.min(...P.parts.map(x => x.rect[0])), Math.min(...P.parts.map(x => x.rect[1])), Math.max(...P.parts.map(x => x.rect[2])), Math.max(...P.parts.map(x => x.rect[3]))];
+    this.redrawOverlay(v, v.pages[P.page]); this.showParaBar();
+  }
+  clearPara() {
+    const had = this.para; this.para = null; document.querySelectorAll(".parabar").forEach(n => n.remove());
+    if (had && this.viewer?.pages[had.page]) this.redrawOverlay(this.viewer, this.viewer.pages[had.page]);
+  }
+  showParaBar() {
+    document.querySelectorAll(".parabar").forEach(n => n.remove());
+    const P = this.para, v = this.viewer; if (!P || !v) return; const p = v.pages[P.page];
+    const l = v.fzRectToLocal(p, P.rect);
+    const bar = document.createElement("div"); bar.className = "annbar parabar";
+    const words = P.text.split(/\s+/).filter(Boolean).length;
+    const speakingNow = typeof speechSynthesis !== "undefined" && speechSynthesis.speaking;
+    bar.innerHTML = `<span class="t">${P.parts.length > 1 ? P.parts.length + " párrafos" : "Párrafo"} · ${words} palabras</span>
+      <button data-a="copy" title="Copiar el texto (Ctrl+C)">${icon("copy")}Copiar</button>
+      <button data-a="read" title="Leer en voz alta">${icon(speakingNow ? "square" : "volume-2")}${speakingNow ? "Parar" : "Leer"}</button>
+      <button data-a="highlight" title="Resaltar">${icon("highlighter")}</button>
+      <button data-a="underline" title="Subrayar">${icon("underline")}</button>
+      <button data-a="strike" title="Tachar">${icon("strikethrough")}</button>
+      <button data-a="comment" title="Resaltar con comentario">${icon("message-square")}</button>
+      <button data-a="edit" title="Editar el párrafo">${icon("pencil")}</button>
+      <button data-a="search" title="Buscar este texto en los documentos abiertos">${icon("search")}</button>
+      <button data-a="share" title="Compartir el texto">${icon("share")}</button>
+      <button data-a="redact" title="Marcar para censurar" class="danger">${icon("square-dashed")}</button>
+      <button data-a="x" title="Cerrar (Esc)">✕</button>`;
+    bar.style.left = Math.max(0, l[0]) + "px"; bar.style.top = (l[1] > 48 ? l[1] - 46 : l[3] + 6) + "px";
+    bar.addEventListener("pointerdown", (e) => e.stopPropagation());
+    bar.onclick = (e) => { const a = e.target.closest("[data-a]")?.dataset.a; if (a) this.paraAction(a); };
+    p.div.appendChild(bar);
+  }
+  async paraAction(a) {
+    const P = this.para; if (!P) return; const d = this.doc, i = P.page;
+    if (a === "x") return this.clearPara();
+    if (a === "copy") return copyText(P.text);
+    if (a === "read") {
+      if (!("speechSynthesis" in window)) return ui.toast("Lectura en voz alta no disponible en este navegador");
+      if (speechSynthesis.speaking) { speechSynthesis.cancel(); return this.showParaBar(); }
+      let lang = "es-ES"; try { lang = (await d.muDoc()).getLanguage() || lang; } catch {}
+      const u = new SpeechSynthesisUtterance(P.text); u.lang = lang; u.rate = settings.data.ttsRate || 1;
+      u.onend = u.onerror = () => { if (this.para === P) this.showParaBar(); };
+      speechSynthesis.speak(u); return this.showParaBar();
+    }
+    if (["highlight", "underline", "strike", "comment"].includes(a)) {
+      let contents = "";
+      if (a === "comment") { contents = await ui.prompt("Comentario", "Comentario sobre el párrafo:", "", "textarea"); if (contents == null) return; }
+      const type = a === "comment" ? "Highlight" : MARKUP[a];
+      const color = a === "highlight" || a === "comment" ? settings.data.hlColor : settings.data.color;
+      await d.withMu(a === "comment" ? "Comentario" : TOOL_NAMES[a], (doc) => { A.addMarkup(doc, i, type, P.quads, color, contents); });
+      return this.clearPara();
+    }
+    if (a === "redact") { await d.withMu("Marcar para censurar", (doc) => { A.addRedact(doc, i, P.quads); }); ui.toast("Marcado. Pulse Firmar › Aplicar censura para eliminarlo definitivamente", "info", 4000); return this.clearPara(); }
+    if (a === "search") { const q = P.text.length > 80 ? P.text.slice(0, 80).replace(/\s+\S*$/, "") : P.text; this.clearPara(); const bar = document.getElementById("searchbar"); bar.querySelector("input[type=search]").value = q; this.app.searchOpen = true; bar.classList.add("open"); return this.app.runSearch(); }
+    if (a === "share") { try { if (navigator.share) await navigator.share({ text: P.text }); else copyText(P.text); } catch {} return; }
+    if (a === "edit") {
+      if (P.parts.length > 1) return ui.toast("Seleccione un solo párrafo para editarlo");
+      const mdoc = await d.muDoc(); const part = P.parts[0];
+      const blk = A.blockAt(mdoc, i, (part.rect[0] + part.rect[2]) / 2, part.rect[1] + 1); if (!blk) return;
+      this.clearPara(); const p = this.viewer.pages[i];
+      const txt = await this.inlineEditor(p, blk.rect, blk.text, blk.size, blk.color, true, false);
+      if (txt == null || txt.trim() === blk.text) return;
+      await d.withMu("Editar párrafo", (doc, m) => { A.replaceBlock(m, doc, i, blk, txt); });
+    }
+  }
+
   showAnnBar() {
-    document.querySelectorAll(".annbar").forEach(n => n.remove());
+    document.querySelectorAll(".annbar,.annbar-h").forEach(n => n.remove());
     const s = this.sel, v = this.viewer; if (!s || !v) return; const p = v.pages[s.page];
     const l = v.fzRectToLocal(p, s.bounds);
     const bar = document.createElement("div"); bar.className = "annbar";
     bar.style.left = l[0] + "px"; bar.style.top = Math.max(0, l[1] - 44) + "px";
-    bar.innerHTML = `<span class="t">${ui.esc(s.type)}</span><label title="Color"><input type="color"></label><button data-a="txt">Texto…</button><button data-a="del" class="danger">Eliminar</button>`;
+    if (s.kind === "img") {
+      bar.innerHTML = `<span class="t">Imagen · arrastre para mover, tiradores para escalar</span><button data-a="del" class="danger">Eliminar</button>`;
+      bar.querySelector('[data-a="del"]').onclick = () => this.deleteSelected();
+      bar.addEventListener("pointerdown", (e) => e.stopPropagation()); p.div.appendChild(bar);
+      for (const c of ["nw", "ne", "sw", "se"]) { const h = document.createElement("div"); h.className = "hdl annbar-h"; h.dataset.c = c; h.style.left = (c.includes("w") ? l[0] : l[2]) + "px"; h.style.top = (c.includes("n") ? l[1] : l[3]) + "px"; p.div.appendChild(h); }
+      return;
+    }
+    const W = [0.5, 1, 2, 3, 5, 8], O = [100, 75, 50, 25];
+    bar.innerHTML = `<span class="t">${ui.esc(s.type)}</span><label title="Color"><input type="color"></label>
+      <select data-a="w" title="Grosor">${W.map(w => `<option value="${w}">${w} pt</option>`).join("")}</select>
+      <select data-a="o" title="Opacidad">${O.map(o => `<option value="${o / 100}">${o} %</option>`).join("")}</select>
+      <button data-a="txt">Texto…</button><button data-a="copy">Copiar</button><button data-a="cut">Cortar</button><button data-a="del" class="danger">Eliminar</button>`;
+    const ws = bar.querySelector('[data-a="w"]'), os = bar.querySelector('[data-a="o"]');
+    this.doc.muDoc().then(doc => { try { const a = A.getAnnot(doc, s.page, s.index); const bw = a.getBorderWidth?.() ?? 1; ws.value = String(W.reduce((x, y) => Math.abs(y - bw) < Math.abs(x - bw) ? y : x)); const op = a.getOpacity?.() ?? 1; os.value = String(O.map(o => o / 100).reduce((x, y) => Math.abs(y - op) < Math.abs(x - op) ? y : x)); } catch {} });
+    ws.onchange = () => this.doc.withMu("Grosor", (doc) => A.setAnnotStyle(doc, s.page, s.index, { width: +ws.value }), { silent: true }).then(() => this.showAnnBar());
+    os.onchange = () => this.doc.withMu("Opacidad", (doc) => A.setAnnotStyle(doc, s.page, s.index, { opacity: +os.value }), { silent: true }).then(() => this.showAnnBar());
+    bar.querySelector('[data-a="copy"]').onclick = () => this.app.cmd("copy");
+    bar.querySelector('[data-a="cut"]').onclick = () => this.app.cmd("cut");
     const ci = bar.querySelector("input");
     this.doc.muDoc().then(doc => { try { ci.value = rgb01ToHex(A.getAnnot(doc, s.page, s.index).getColor()); } catch {} });
     ci.onchange = () => this.doc.withMu("Color", (doc) => { const a = A.getAnnot(doc, s.page, s.index); a.setColor(hexToRgb01(ci.value)); if (a.getType() === "FreeText") { const da = a.getDefaultAppearance(); a.setDefaultAppearance(da.font || "Helv", da.size || 12, hexToRgb01(ci.value)); } a.update(); }, { silent: true }).then(() => this.showAnnBar());
@@ -258,6 +438,12 @@ export class Tools {
     bar.querySelector('[data-a="del"]').onclick = () => this.deleteSelected();
     bar.addEventListener("pointerdown", (e) => e.stopPropagation());
     p.div.appendChild(bar);
+    // tiradores de tamaño
+    for (const c of ["nw", "ne", "sw", "se"]) {
+      const h = document.createElement("div"); h.className = "hdl annbar-h"; h.dataset.c = c;
+      h.style.left = (c.includes("w") ? l[0] - 3 : l[2] + 3) + "px"; h.style.top = (c.includes("n") ? l[1] - 3 : l[3] + 3) + "px";
+      p.div.appendChild(h);
+    }
   }
 
   /** Superposición persistente: resultados de búsqueda y selección */
@@ -265,6 +451,10 @@ export class Tools {
     if (!p?.overlay) return;
     p.overlay.querySelectorAll(".ov").forEach(n => n.remove());
     const add = (tag, attrs) => { const n = document.createElementNS(SVGNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); n.classList.add("ov"); p.overlay.appendChild(n); };
+    if (this.para && this.para.page === p.i) {
+      for (const q of this.para.quads) { const a = v.fzToLocal(p, q[0], q[1]), b = v.fzToLocal(p, q[6], q[7]); add("rect", { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), width: Math.abs(b[0] - a[0]), height: Math.abs(b[1] - a[1]), fill: "#2563eb", "fill-opacity": .22 }); }
+      const r = v.fzRectToLocal(p, this.para.rect); add("rect", { x: r[0] - 4, y: r[1] - 4, width: r[2] - r[0] + 8, height: r[3] - r[1] + 8, fill: "none", stroke: "#2563eb", "stroke-width": 1.5, rx: 4 });
+    }
     const srch = v.doc.search;
     if (srch?.hits?.length) {
       srch.hits.forEach((h, k) => {
@@ -278,7 +468,8 @@ export class Tools {
     const s = this.sel;
     if (s && s.docId === v.doc.id && s.page === p.i) {
       const dx = this.drag?.dx || 0, dy = this.drag?.dy || 0;
-      const r = v.fzRectToLocal(p, [s.bounds[0] + dx, s.bounds[1] + dy, s.bounds[2] + dx, s.bounds[3] + dy]);
+      const b = this.rs ? this.rs.nb : s.bounds;
+      const r = v.fzRectToLocal(p, [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy]);
       add("rect", { x: r[0] - 3, y: r[1] - 3, width: r[2] - r[0] + 6, height: r[3] - r[1] + 6, fill: "#1e88e5", "fill-opacity": .08, stroke: "#1e88e5", "stroke-dasharray": "4 3", "stroke-width": 1.5 });
     }
   }

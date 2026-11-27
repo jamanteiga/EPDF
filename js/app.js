@@ -1,7 +1,7 @@
 // ePDF — aplicación principal
 // Copyright (C) 2026 José Antonio Manteiga Presedo
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readFile, pickFiles, download, shareFile, settings, baseName, fmtBytes, mu, clamp } from "./core/engine.js";
+import { readFile, pickFiles, download, shareFile, settings, baseName, fmtBytes, mu, muJob, clamp } from "./core/engine.js";
 import { EpdfDoc } from "./core/doc.js";
 import { Viewer } from "./core/viewer.js";
 import { Tools } from "./core/tools.js";
@@ -16,16 +16,24 @@ import * as D from "./cmd/draw.js";
 import * as C from "./cmd/convert.js";
 import * as R from "./cmd/review.js";
 import * as AF from "./sign/autofirma.js";
+import * as CL from "./cmd/clip.js";
+import * as MS from "./cmd/measure.js";
+import * as PL from "./cmd/plans.js";
+import { initI18n, applyTheme } from "./ui/i18n.js";
 
-export const VERSION = "1.1.0";
-const SOURCE_URL = "https://github.com/"; // ← indique aquí la URL pública del repositorio (obligación AGPL)
+export const VERSION = "1.3.1";
+const SOURCE_URL = "https://github.com/jamanteiga/EPDF"; // URL pública del código fuente (obligación AGPL)
 
 // ---------------- archivos recientes (IndexedDB) ----------------
 const Recent = {
   db: null,
   async open() {
     if (this.db) return this.db;
-    this.db = await new Promise((res, rej) => { const r = indexedDB.open("epdf", 1); r.onupgradeneeded = () => r.result.createObjectStore("recent", { keyPath: "name" }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    this.db = await new Promise((res, rej) => {
+      const r = indexedDB.open("epdf", 2);
+      r.onupgradeneeded = () => { const db = r.result; if (!db.objectStoreNames.contains("recent")) db.createObjectStore("recent", { keyPath: "name" }); if (!db.objectStoreNames.contains("session")) db.createObjectStore("session", { keyPath: "key" }); };
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
     return this.db;
   },
   async tx(mode, fn) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction("recent", mode); const st = t.objectStore("recent"); const out = fn(st); t.oncomplete = () => res(out?.result ?? out); t.onerror = () => rej(t.error); }); },
@@ -42,6 +50,17 @@ const Recent = {
   async clear() { try { await this.tx("readwrite", st => st.clear()); } catch {} },
 };
 
+// ---------------- recuperación de sesión (cambios sin guardar) ----------------
+const SID = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const Session = {
+  async tx(mode, fn) { const db = await Recent.open(); return new Promise((res, rej) => { const t = db.transaction("session", mode); const out = fn(t.objectStore("session")); t.oncomplete = () => res(out?.result ?? out); t.onerror = () => rej(t.error); }); },
+  key: (d) => SID + ":" + d.id,
+  async save(d) { try { if (d.bytes.length > 80e6) return; await this.tx("readwrite", st => st.put({ key: this.key(d), name: d.name, bytes: d.bytes, date: Date.now() })); } catch (e) { console.warn("sesión", e); } },
+  async drop(d) { try { await this.tx("readwrite", st => st.delete(this.key(d))); } catch {} },
+  async orphans() { try { return ((await this.tx("readonly", st => st.getAll())) || []).filter(r => !r.key.startsWith(SID + ":")); } catch { return []; } },
+  async clearOrphans() { for (const r of await this.orphans()) try { await this.tx("readwrite", st => st.delete(r.key)); } catch {} },
+};
+
 class App {
   constructor() {
     this.docs = []; this.active = null; this.cert = null;
@@ -52,8 +71,9 @@ class App {
     this.tabsEl = document.getElementById("doctabs");
     this.setupTop(); this.setupStatus(); this.setupSearch(); this.setupDnD(); this.setupKeys();
     window.addEventListener("resize", () => this.relayout());
-    this.renderTabs(); this.renderStart();
-    window.addEventListener("beforeunload", (e) => { if (this.docs.some(d => d.dirty)) { e.preventDefault(); e.returnValue = ""; } });
+    this.renderTabs(); this.renderStart(); this.clip = null;
+    setTimeout(() => this.offerRecovery(), 400);
+    window.addEventListener("beforeunload", (e) => { if (!this._noUnloadPrompt && this.docs.some(d => d.dirty)) { e.preventDefault(); e.returnValue = ""; } });
     if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) navigator.serviceWorker.register("sw.js").catch(() => {});
     if ("launchQueue" in window) window.launchQueue.setConsumer(async (p) => { for (const h of p.files || []) this.openFiles([await h.getFile()]); });
   }
@@ -97,11 +117,21 @@ class App {
   async closeDoc(d = this.active) {
     if (!d) return;
     if (d.dirty && !(await ui.confirm("Cerrar", `«${ui.esc(d.name)}» tiene cambios sin guardar. ¿Cerrar sin guardar?`, "Cerrar sin guardar", true))) return;
-    const k = this.docs.indexOf(d); this.docs.splice(k, 1); d.destroy();
+    const k = this.docs.indexOf(d); this.docs.splice(k, 1); Session.drop(d); d.destroy();
     this.activate(this.docs[Math.min(k, this.docs.length - 1)] || null);
     if (!this.docs.length) this.renderStart();
   }
-  onDocChanged(d) { this.sidebar.invalidate(d); this.renderTabs(); this.refreshBanner(); this.updateStatus(); if (d === this.active) this.sidebar.refresh(); if (this.searchOpen && d.search) this.runSearch(true); }
+  async offerRecovery() {
+    const list = await Session.orphans(); if (!list.length) return;
+    const ok = await ui.confirm("Recuperar documentos", `ePDF se cerró con <b>${list.length}</b> documento(s) con cambios sin guardar:<ul>${list.map(r => `<li>${ui.esc(r.name)} <small>(${new Date(r.date).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })})</small></li>`).join("")}</ul>¿Recuperarlos?`, "Recuperar");
+    if (ok) for (const r of list.sort((a, b) => a.date - b.date)) { const d = await this.openBytes(r.bytes, r.name, { recent: false }); if (d) { d.savedBytes = null; this.onDocChanged(d); } }
+    await Session.clearOrphans();
+  }
+  scheduleSession(d) {
+    clearTimeout(d._sessT);
+    d._sessT = setTimeout(() => { if (!this.docs.includes(d)) return; if (d.dirty) Session.save(d); else Session.drop(d); }, 1200);
+  }
+  onDocChanged(d) { this.scheduleSession(d); this.sidebar.invalidate(d); this.renderTabs(); this.refreshBanner(); this.updateStatus(); if (d === this.active) this.sidebar.refresh(); if (this.searchOpen && d.search) this.runSearch(true); }
   onPageChanged(v) { if (v.doc !== this.active) return; this.updateStatus(); this.sidebar.markCurrent(v.current); }
   onViewChanged(v) { if (v.doc === this.active) this.updateStatus(); }
 
@@ -140,10 +170,10 @@ class App {
     }
     if (d.sigCount) {
       const res = this.sidebar.sigRes.get(d.id);
-      const ok = res && res.every(s => s.ok), whole = res && res.length && res[res.length - 1].coversWholeFile;
-      const e = document.createElement("div"); e.className = "ban sig " + (!res ? "" : ok ? (whole ? "good" : "warn") : "bad");
+      const ok = res && res.every(s => s.ok), whole = res && res.length && res[res.length - 1].coversWholeFile, trusted = res && res.every(s => s.trust?.trusted);
+      const e = document.createElement("div"); e.className = "ban sig " + (!res ? "" : ok ? (whole && trusted ? "good" : "warn") : "bad");
       const names = res ? [...new Set(res.map(s => s.signer?.cn || s.signerName).filter(Boolean))].join(", ") : "";
-      e.innerHTML = `<span>${!res ? "🔏 Documento con " + d.sigCount + " firma(s) digital(es)" : ok ? (whole ? "✔ Firmado y todas las firmas son válidas" : "⚠ Firmas válidas, pero hay cambios posteriores a la última firma") : "✖ Al menos una firma NO es válida"}${names ? " — " + ui.esc(names) : ""}</span><button class="btn">Panel de firmas</button>`;
+      e.innerHTML = `<span>${!res ? "🔏 Documento con " + d.sigCount + " firma(s) digital(es)" : ok ? (!whole ? "⚠ Firmas válidas, pero hay cambios posteriores a la última firma" : trusted ? "✔ Firmado · firmas válidas de emisores de confianza" : "✔ Firmas válidas · ⚠ emisor no reconocido") : "✖ Al menos una firma NO es válida"}${names ? " — " + ui.esc(names) : ""}</span><button class="btn">Panel de firmas</button>`;
       e.querySelector("button").onclick = () => this.sidebar.open("sigs"); b.appendChild(e);
     }
     if (d.protection) { const e = document.createElement("div"); e.className = "ban info"; e.innerHTML = "<span>🔒 Se cifrará con contraseña al guardar.</span>"; b.appendChild(e); }
@@ -205,7 +235,7 @@ class App {
   toggleSearch(on = !this.searchOpen) {
     this.searchOpen = on; const bar = document.getElementById("searchbar"); bar.classList.toggle("open", on);
     if (on) { const sel = window.getSelection()?.toString(); const inp = bar.querySelector("input[type=search]"); if (sel && sel.length < 80) inp.value = sel; inp.focus(); inp.select(); if (inp.value) this.runSearch(); }
-    else for (const d of this.docs) { d.search = null; d.viewer?.pages.forEach(p => this.tools.redrawOverlay(d.viewer, p)); }
+    else { document.getElementById("searchres")?.remove(); for (const d of this.docs) { d.search = null; d.viewer?.pages.forEach(p => this.tools.redrawOverlay(d.viewer, p)); } }
   }
   async runSearch(keepCur = false) {
     const bar = document.getElementById("searchbar"); const q = bar.querySelector("input[type=search]").value.trim();
@@ -214,7 +244,10 @@ class App {
     let total = 0, here = 0;
     for (const d of targets) {
       const hits = [];
-      if (q) { const doc = await d.muDoc(); for (let i = 0; i < doc.countPages(); i++) for (const quads of doc.loadPage(i).search(q, "ignore-case")) hits.push({ page: i, quads }); }
+      if (q) {
+        if (d.bytes.length > 4e6) hits.push(...await muJob("search", [d.bytes.slice(), q])); // documentos grandes: en segundo plano
+        else { const doc = await d.muDoc(); for (let i = 0; i < doc.countPages(); i++) for (const quads of doc.loadPage(i).search(q, "ignore-case")) hits.push({ page: i, quads }); }
+      }
       const prevCur = keepCur && d.search ? d.search.cur : -1;
       d.search = { q, hits, cur: hits.length ? clamp(prevCur, 0, hits.length - 1) : -1 };
       if (!keepCur && hits.length && d === this.active) { const cp = d.viewer.current || 0; const k = hits.findIndex(h => h.page >= cp); d.search.cur = k < 0 ? 0 : k; }
@@ -223,10 +256,44 @@ class App {
     }
     const s = this.active?.search;
     bar.querySelector(".cnt").textContent = q ? (here ? `${(s?.cur ?? 0) + 1} de ${here}` : "Sin resultados") + (all && this.docs.length > 1 ? ` · ${total} en total` : "") : "";
+    await this.renderSearchResults(all && q ? targets : [], q);
     if (!keepCur && s?.hits.length) this.focusHit();
   }
-  stepSearch(dir) {
-    const d = this.active; const s = d?.search; if (!s?.hits.length) return this.runSearch();
+  /** Lista de resultados de todos los documentos abiertos, con contexto */
+  async renderSearchResults(docs, q) {
+    let box = document.getElementById("searchres");
+    if (!docs.length || !docs.some(d => d.search?.hits.length)) { box?.remove(); return; }
+    if (!box) { box = document.createElement("div"); box.id = "searchres"; document.getElementById("searchbar").after(box); }
+    const ql = q.toLocaleLowerCase("es"); let html = "";
+    for (const d of docs) {
+      const hits = d.search?.hits || []; if (!hits.length) continue;
+      html += `<div class="sr-doc">${icon("file-text")} ${ui.esc(d.name)} <small>${hits.length}</small></div>`;
+      let texts = null; if (d.bytes.length <= 4e6) { try { const doc = await d.muDoc(); texts = {}; for (const p of new Set(hits.map(h => h.page))) texts[p] = doc.loadPage(p).toStructuredText().asText().replace(/\s+/g, " "); } catch { texts = null; } }
+      const seen = {};
+      hits.slice(0, 200).forEach((h, k) => {
+        let snip = "";
+        if (texts) { const t = texts[h.page]; const n = seen[h.page] = (seen[h.page] ?? -1) + 1; let pos = -1; for (let i = 0; i <= n; i++) { pos = t.toLocaleLowerCase("es").indexOf(ql, pos + 1); if (pos < 0) break; } if (pos >= 0) snip = `${pos > 40 ? "…" : ""}${ui.esc(t.slice(Math.max(0, pos - 40), pos))}<mark>${ui.esc(t.slice(pos, pos + q.length))}</mark>${ui.esc(t.slice(pos + q.length, pos + q.length + 50))}…`; }
+        html += `<button class="sr-hit" data-d="${d.id}" data-k="${k}"><b>p. ${h.page + 1}</b> <span>${snip}</span></button>`;
+      });
+      if (hits.length > 200) html += `<div class="sm">… y ${hits.length - 200} más</div>`;
+    }
+    box.innerHTML = html;
+    box.querySelectorAll(".sr-hit").forEach(b => b.onclick = async () => {
+      const d = this.docs.find(x => String(x.id) === b.dataset.d); if (!d) return;
+      if (d !== this.active) await this.activate(d);
+      d.search.cur = +b.dataset.k; this.focusHit();
+      box.querySelectorAll(".sr-hit.on").forEach(x => x.classList.remove("on")); b.classList.add("on");
+      document.querySelector("#searchbar .cnt").textContent = `${d.search.cur + 1} de ${d.search.hits.length} · ${d.name}`;
+    });
+  }
+  async stepSearch(dir) {
+    const d = this.active; const s = d?.search;
+    const all = document.querySelector('#searchbar [data-a="all"]').checked;
+    if (all && s && (s.cur + dir < 0 || s.cur + dir >= s.hits.length || !s.hits.length)) { // saltar al documento siguiente con resultados
+      const n = this.docs.length; let k = this.docs.indexOf(d);
+      for (let i = 1; i <= n; i++) { const x = this.docs[((k + dir * i) % n + n) % n]; if (x.search?.hits.length) { if (x !== d) { await this.activate(x); x.search.cur = dir > 0 ? 0 : x.search.hits.length - 1; this.focusHit(); document.querySelector("#searchbar .cnt").textContent = `${x.search.cur + 1} de ${x.search.hits.length} · ${x.name}`; return; } break; } }
+    }
+    if (!s?.hits.length) return this.runSearch();
     s.cur = (s.cur + dir + s.hits.length) % s.hits.length; this.focusHit();
     document.querySelector("#searchbar .cnt").textContent = `${s.cur + 1} de ${s.hits.length}`;
   }
@@ -252,6 +319,10 @@ class App {
       if (mod && k === "-") { e.preventDefault(); return this.cmd("zoomOut"); }
       if (mod && k === "0") { e.preventDefault(); return this.cmd("fitPage"); }
       if (typing) return;
+      if (mod && k === "c" && this.tools.para) { e.preventDefault(); return this.tools.paraAction("copy"); }
+      if (mod && ["c", "x", "v"].includes(k) && !(window.getSelection()?.toString())) {
+        e.preventDefault(); return this.cmd(k === "c" ? "copy" : k === "x" ? "cut" : "paste");
+      }
       if (k === "h" && !mod) this.cmd("tool:hand"); if (k === "v" && !mod) this.cmd("tool:select");
     });
   }
@@ -307,6 +378,8 @@ class App {
   async prefs() {
     const s = settings.data;
     const r = await ui.form("Preferencias", [
+      { name: "lang", label: "Idioma de la interfaz", type: "select", value: s.lang || "es", options: [["es", "Castellano"], ["gl", "Galego"]] },
+      { name: "theme", label: "Tema", type: "select", value: s.theme || "light", options: [["light", "Claro"], ["dark", "Oscuro (interfaz)"], ["auto", "Automático (según el sistema)"]] },
       { name: "author", label: "Autor de los comentarios", value: s.author },
       { name: "color", label: "Color por defecto de comentarios", type: "color", value: s.color },
       { name: "hlColor", label: "Color de resaltado", type: "color", value: s.hlColor },
@@ -315,15 +388,24 @@ class App {
       { name: "html", type: "html", html: `<h4>AutoFirma / Cliente @firma</h4><small>${AF.isMobile() ? "En iPad son <b>obligatorios</b>." : "En ordenador con AutoFirma instalado no son necesarios (se usa conexión local)."} Son los servicios <code>afirma-signature-storage</code> y <code>afirma-signature-retriever</code> de la Suite @firma.</small>` },
       { name: "afStorage", label: "URL StorageService", value: s.afStorage, placeholder: "https://servidor/afirma-signature-storage/StorageService" },
       { name: "afRetriever", label: "URL RetrieveService", value: s.afRetriever, placeholder: "https://servidor/afirma-signature-retriever/RetrieveService" },
+      { name: "html2", type: "html", html: `<h4>Servicios de firma (sello de tiempo, revocación, LTV)</h4><small>Las TSA y los servicios OCSP/CRL no aceptan llamadas directas desde el navegador. Publique el intermediario <code>server/epdf-proxy-worker.js</code> (Cloudflare Workers, gratuito) e indique aquí su dirección.</small>` },
+      { name: "proxyUrl", label: "URL del intermediario", value: s.proxyUrl || "", placeholder: "https://epdf-proxy.<usuario>.workers.dev" },
+      { name: "tsaUrl", label: "Servidor de sello de tiempo (TSA)", value: s.tsaUrl || "", placeholder: "http://timestamp.digicert.com (por defecto)" },
       { name: "clearRecent", label: "Borrar la lista de archivos recientes", type: "checkbox", value: false },
       { name: "clearSigs", label: "Borrar firmas manuscritas guardadas", type: "checkbox", value: false },
     ], { okText: "Guardar", wide: true });
     if (!r) return;
-    for (const k of ["author", "color", "hlColor", "fontSize", "measureScale", "afStorage", "afRetriever"]) s[k] = r[k];
+    const langChanged = (s.lang || "es") !== r.lang;
+    for (const k of ["author", "color", "hlColor", "fontSize", "measureScale", "afStorage", "afRetriever", "proxyUrl", "tsaUrl", "theme", "lang"]) s[k] = r[k];
+    applyTheme();
     settings.save();
     if (r.clearRecent) { await Recent.clear(); this.renderStart(); }
     if (r.clearSigs) try { localStorage.removeItem("epdf.signatures"); } catch {}
     this.ribbon.show(this.ribbon.current); ui.toast("Preferencias guardadas", "ok");
+    if (langChanged && await ui.confirm("Idioma", r.lang === "gl" ? "Para cambiar o idioma hai que recargar ePDF. Os documentos con cambios sen gardar recuperaranse. ¿Recargar agora?" : "Para cambiar el idioma hay que recargar ePDF. Los documentos con cambios sin guardar se podrán recuperar. ¿Recargar ahora?", "Recargar")) {
+      for (const d of this.docs) if (d.dirty) await Session.save(d);
+      this._noUnloadPrompt = true; location.reload();
+    }
   }
 
   about() {
@@ -350,7 +432,7 @@ class App {
       <h4>PDF/A</h4><p>Si el documento es PDF/A, se muestra un aviso ámbar y se pide confirmación antes de modificarlo.</p></div>`, [{ text: "Cerrar", value: null, primary: true }], { wide: true });
   }
   shortcuts() {
-    ui.alert("Atajos de teclado", `<table class="kv"><tr><td>⌘/Ctrl + O</td><td>Abrir</td></tr><tr><td>⌘/Ctrl + S</td><td>Guardar</td></tr><tr><td>⌘/Ctrl + ⇧ + S</td><td>Guardar como</td></tr><tr><td>⌘/Ctrl + Z / Y</td><td>Deshacer / Rehacer</td></tr><tr><td>⌘/Ctrl + F</td><td>Buscar</td></tr><tr><td>⌘/Ctrl + P</td><td>Imprimir</td></tr><tr><td>⌘/Ctrl + + / − / 0</td><td>Acercar / Alejar / Ajustar</td></tr><tr><td>⌘/Ctrl + W</td><td>Cerrar documento</td></tr><tr><td>H / V</td><td>Mano / Selección de texto</td></tr><tr><td>Supr</td><td>Eliminar comentario seleccionado</td></tr><tr><td>Esc</td><td>Volver a la herramienta Mano</td></tr></table>`);
+    ui.alert("Atajos de teclado", `<table class="kv"><tr><td>⌘/Ctrl + O</td><td>Abrir</td></tr><tr><td>⌘/Ctrl + S</td><td>Guardar</td></tr><tr><td>⌘/Ctrl + ⇧ + S</td><td>Guardar como</td></tr><tr><td>⌘/Ctrl + Z / Y</td><td>Deshacer / Rehacer</td></tr><tr><td>Ctrl/⌘ + clic</td><td>Seleccionar el párrafo (Mayús para añadir más)</td></tr><tr><td>⌘/Ctrl + C / X / V</td><td>Copiar / Cortar / Pegar comentario o páginas</td></tr><tr><td>⌘/Ctrl + F</td><td>Buscar</td></tr><tr><td>⌘/Ctrl + P</td><td>Imprimir</td></tr><tr><td>⌘/Ctrl + + / − / 0</td><td>Acercar / Alejar / Ajustar</td></tr><tr><td>⌘/Ctrl + W</td><td>Cerrar documento</td></tr><tr><td>H / V</td><td>Mano / Selección de texto</td></tr><tr><td>Supr</td><td>Eliminar comentario seleccionado</td></tr><tr><td>Intro / doble toque</td><td>Terminar perímetro o área</td></tr><tr><td>Esc</td><td>Volver a la herramienta Mano</td></tr></table>`);
   }
 
   // ---------------- despachador de órdenes ----------------
@@ -364,7 +446,7 @@ class App {
         return this.tools.set(t);
       }
       if (id.startsWith("f:")) return F.createField(this, id.slice(2));
-      const needDoc = !["open", "openUrl", "blank", "scan", "fromImages", "prefs", "about", "licenses", "help", "shortcuts", "compare", "combine", "bs:open"].includes(id);
+      const needDoc = !["open", "openUrl", "blank", "scan", "fromImages", "prefs", "about", "licenses", "help", "shortcuts", "compare", "compareVisual", "overlay", "combine", "signBatch", "bs:open"].includes(id);
       if (needDoc && !d) return ui.toast("Abra un documento primero");
       switch (id) {
         case "open": return this.open();
@@ -388,6 +470,13 @@ class App {
         case "undo": return d.undo();
         case "redo": return d.redo();
         case "find": return this.toggleSearch(true);
+        case "copy": return CL.copy(this, false);
+        case "cut": return CL.copy(this, true);
+        case "paste": return CL.paste(this);
+        case "pgCopy": return CL.copyPages(this, false);
+        case "pgCut": return CL.copyPages(this, true);
+        case "pgPaste": return CL.paste(this, true);
+        case "penOnly": settings.data.penOnly = !settings.data.penOnly; settings.save(); this.ribbon.setActiveTool(this.tools.tool); return ui.toast(settings.data.penOnly ? "Solo el Apple Pencil dibuja; el dedo desplaza y amplía" : "El dedo y el lápiz dibujan", "info");
         case "copyText": { const t = window.getSelection()?.toString(); if (!t) return ui.toast("Seleccione texto con la herramienta Selección de texto"); await navigator.clipboard.writeText(t); return ui.toast("Texto copiado", "ok"); }
         case "snapshot": return D.snapshot(this);
         case "zoomIn": return v.zoomIn();
@@ -417,6 +506,7 @@ class App {
         // Objetos / comentarios
         case "addImage": return D.addImage(this);
         case "stamp": return D.stamp(this);
+        case "revStamp": return D.reviewStamp(this);
         case "handSign": return D.handSignature(this);
         case "summary": return R.summarizeComments(this);
         case "delComments": return R.deleteAllComments(this);
@@ -425,6 +515,8 @@ class App {
         case "sign": return PR.signDocument(this);
         case "certify": return PR.signDocument(this, { certify: true });
         case "validate": return PR.validate(this);
+        case "ltv": return PR.addLtv(this);
+        case "signBatch": return PR.signBatch(this);
         case "identity": return PR.certInfo(this);
         case "password": return PR.password(this);
         case "secInfo": return PR.securityInfo(this);
@@ -437,6 +529,8 @@ class App {
         case "fExport": return F.exportData(this);
         case "fApply": if (!(await d.flushForms())) ui.toast("No hay valores pendientes"); return;
         case "fReset": return F.resetForm(this);
+        case "fAlign": return F.alignFields(this);
+        case "fTabs": return F.tabOrder(this);
         // Organizar
         case "insert": return O.insertPages(this);
         case "delete": return O.deletePages(this);
@@ -462,10 +556,19 @@ class App {
         case "toExcel": return C.office(this, "Excel");
         case "toPpt": return C.office(this, "PowerPoint");
         case "ocr": return C.ocr(this);
+        case "ocrZone": return (await import("./cmd/zone.js")).start(this);
+        case "pdfa": return (await import("./cmd/pdfa.js")).convertPdfA(this);
         case "optimize": return C.optimized(this);
         // Revisar / marcadores / accesibilidad
         case "wordCount": return R.wordCount(this);
         case "compare": return R.compare(this);
+        case "compareVisual": return R.compareVisual(this);
+        case "scale": return MS.setScale(this);
+        case "overlay": return PL.overlayCompare(this);
+        case "pLayers": return this.sidebar.toggle("layers");
+        case "countCat": return PL.setCountCategory(this);
+        case "countReport": return PL.countReport(this);
+        case "measExport": return PL.exportMeasures(this);
         case "bmAdd": return R.addBookmark(this);
         case "bmHeadings": return R.bookmarksFromHeadings(this);
         case "bmExport": return R.exportBookmarks(this);
@@ -519,6 +622,6 @@ class Backstage {
 
 // ---------------- arranque ----------------
 window.addEventListener("DOMContentLoaded", () => {
-  try { window.epdf = new App(); }
+  try { applyTheme(); window.epdf = new App(); initI18n(); }
   catch (e) { console.error(e); document.getElementById("start").innerHTML = `<div class="start-in"><h2>No se pudo iniciar ePDF</h2><p>${ui.esc(e.message)}</p><p>Necesita Safari 16.4 o posterior (iPadOS 16.4+).</p></div>`; }
 });
