@@ -21,7 +21,7 @@ import * as MS from "./cmd/measure.js";
 import * as PL from "./cmd/plans.js";
 import { initI18n, applyTheme } from "./ui/i18n.js";
 
-export const VERSION = "1.3.0";
+export const VERSION = "1.3.1";
 const SOURCE_URL = "https://github.com/jamanteiga/EPDF"; // URL pública del código fuente (obligación AGPL)
 
 // ---------------- archivos recientes (IndexedDB) ----------------
@@ -319,6 +319,7 @@ class App {
       if (mod && k === "-") { e.preventDefault(); return this.cmd("zoomOut"); }
       if (mod && k === "0") { e.preventDefault(); return this.cmd("fitPage"); }
       if (typing) return;
+      if (mod && k === "c" && this.tools.para) { e.preventDefault(); return this.tools.paraAction("copy"); }
       if (mod && ["c", "x", "v"].includes(k) && !(window.getSelection()?.toString())) {
         e.preventDefault(); return this.cmd(k === "c" ? "copy" : k === "x" ? "cut" : "paste");
       }
@@ -431,7 +432,7 @@ class App {
       <h4>PDF/A</h4><p>Si el documento es PDF/A, se muestra un aviso ámbar y se pide confirmación antes de modificarlo.</p></div>`, [{ text: "Cerrar", value: null, primary: true }], { wide: true });
   }
   shortcuts() {
-    ui.alert("Atajos de teclado", `<table class="kv"><tr><td>⌘/Ctrl + O</td><td>Abrir</td></tr><tr><td>⌘/Ctrl + S</td><td>Guardar</td></tr><tr><td>⌘/Ctrl + ⇧ + S</td><td>Guardar como</td></tr><tr><td>⌘/Ctrl + Z / Y</td><td>Deshacer / Rehacer</td></tr><tr><td>⌘/Ctrl + C / X / V</td><td>Copiar / Cortar / Pegar comentario o páginas</td></tr><tr><td>⌘/Ctrl + F</td><td>Buscar</td></tr><tr><td>⌘/Ctrl + P</td><td>Imprimir</td></tr><tr><td>⌘/Ctrl + + / − / 0</td><td>Acercar / Alejar / Ajustar</td></tr><tr><td>⌘/Ctrl + W</td><td>Cerrar documento</td></tr><tr><td>H / V</td><td>Mano / Selección de texto</td></tr><tr><td>Supr</td><td>Eliminar comentario seleccionado</td></tr><tr><td>Intro / doble toque</td><td>Terminar perímetro o área</td></tr><tr><td>Esc</td><td>Volver a la herramienta Mano</td></tr></table>`);
+    ui.alert("Atajos de teclado", `<table class="kv"><tr><td>⌘/Ctrl + O</td><td>Abrir</td></tr><tr><td>⌘/Ctrl + S</td><td>Guardar</td></tr><tr><td>⌘/Ctrl + ⇧ + S</td><td>Guardar como</td></tr><tr><td>⌘/Ctrl + Z / Y</td><td>Deshacer / Rehacer</td></tr><tr><td>Ctrl/⌘ + clic</td><td>Seleccionar el párrafo (Mayús para añadir más)</td></tr><tr><td>⌘/Ctrl + C / X / V</td><td>Copiar / Cortar / Pegar comentario o páginas</td></tr><tr><td>⌘/Ctrl + F</td><td>Buscar</td></tr><tr><td>⌘/Ctrl + P</td><td>Imprimir</td></tr><tr><td>⌘/Ctrl + + / − / 0</td><td>Acercar / Alejar / Ajustar</td></tr><tr><td>⌘/Ctrl + W</td><td>Cerrar documento</td></tr><tr><td>H / V</td><td>Mano / Selección de texto</td></tr><tr><td>Supr</td><td>Eliminar comentario seleccionado</td></tr><tr><td>Intro / doble toque</td><td>Terminar perímetro o área</td></tr><tr><td>Esc</td><td>Volver a la herramienta Mano</td></tr></table>`);
   }
 
   // ---------------- despachador de órdenes ----------------

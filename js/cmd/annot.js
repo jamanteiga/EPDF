@@ -342,6 +342,18 @@ export function blockAt(doc, pageIndex, x, y) {
   try { let got = false; st.walk({ onChar(c, origin, font, sz, quad, col) { if (got) return; if (origin[0] >= R.x - 1 && origin[0] <= R.x + R.w + 1 && origin[1] >= R.y - 1 && origin[1] <= R.y + R.h + 1 && c.trim()) { color = colorHex(col); got = true; } } }); } catch {}
   return { rect: [R.x, R.y, R.x + R.w, R.y + R.h], text, size, lineHeight, font: lines[0].font, x: lines[0].x, y: lines[0].y, color, nlines: lines.length };
 }
+/** Párrafo bajo un punto: texto limpio, rectángulo y cuadriláteros exactos de sus caracteres */
+export function paragraphAt(doc, pageIndex, x, y) {
+  const st = stext(doc, pageIndex); const js = JSON.parse(st.asJSON());
+  let blk = null;
+  for (const b of js.blocks) { if (b.type !== "text") continue; const r = b.bbox; if (x >= r.x - 2 && x <= r.x + r.w + 2 && y >= r.y - 2 && y <= r.y + r.h + 2) { blk = b; break; } }
+  if (!blk || !blk.lines.length) return null;
+  const L = blk.lines, f = L[0].bbox, l = L.at(-1).bbox;
+  const quads = st.highlight([f.x + 0.2, f.y + f.h / 2], [l.x + l.w - 0.2, l.y + l.h / 2], 2000);
+  const text = L.map(k => k.text).reduce((acc, t) => !acc ? t : /[A-Za-zÀ-ÿ]-$/.test(acc) ? acc.slice(0, -1) + t : acc + " " + t, "").replace(/\s+/g, " ").trim();
+  const R = blk.bbox;
+  return { page: pageIndex, rect: [R.x, R.y, R.x + R.w, R.y + R.h], text, quads: quads.length ? quads : L.map(k => { const b = k.bbox; return [b.x, b.y, b.x + b.w, b.y, b.x, b.y + b.h, b.x + b.w, b.y + b.h]; }) };
+}
 /** Sustituye un párrafo: elimina el texto original y escribe el nuevo ajustado al ancho */
 export function replaceBlock(m, doc, pageIndex, blk, newText, { hex } = {}) {
   const page = doc.loadPage(pageIndex);

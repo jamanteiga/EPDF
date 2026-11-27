@@ -26,7 +26,7 @@ Requisitos: **iPadOS 16.5 o posterior** (Safari).
 
 | Modo | Herramientas |
 |---|---|
-| **Leer** | Mano, seleccionar, buscar, ajustar, girar vista, copiar, captura, leer en voz alta, páginas oscuras, cuadrícula, pantalla completa |
+| **Leer** | Mano, seleccionar, **párrafo** (también **Ctrl/⌘ + clic** en cualquier modo; con Mayús se añaden más párrafos): copiar, leer en voz alta, resaltar, subrayar, tachar, comentar, editar, buscar, compartir o censurar, buscar, ajustar, girar vista, copiar, captura, leer en voz alta, páginas oscuras, cuadrícula, pantalla completa |
 | **Anotar** | Resaltar, subrayar, tachar, lápiz, **solo lápiz** (el dedo desplaza), rectángulo, elipse, flecha, línea, nota, texto, cuadro de texto, sello, **sello de revisión** (estado, revisor, fecha, nº de revisión, proyecto), borrar, lista de comentarios con **respuestas y estado** (aceptado, rechazado…), **informe de comentarios en Excel, PDF o HTML**. Al tocar un comentario: tiradores para redimensionar, color, grosor, opacidad, copiar, cortar, eliminar |
 | **Medir** | **Calibrar** sobre una cota conocida o escala 1:N, distancia, perímetro, área, ángulo, **contador de símbolos por categoría**, **exportar mediciones y recuentos a Excel**, **capas** del plano, **superponer revisiones** |
 | **Editar** | Copiar/cortar/pegar comentarios e imágenes **entre documentos**, **editar línea** y **editar párrafo** (reajusta las líneas), **mover/escalar/eliminar imágenes**, añadir texto, imagen, marca de agua, fondo, encabezado y pie, numeración, aplanar, propiedades |
